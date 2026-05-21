@@ -33,7 +33,9 @@ use crate::pane_group::TerminalPane;
 use crate::pane_group::{
     CodePane, NotebookPane, PaneGroup, PaneId, TabBarHoverIndex, WorkflowPane,
 };
-use crate::tab::{tab_position_id, SelectedTabColor, TabData};
+use crate::projects::ProjectManagementModel;
+use crate::settings::AISettings;
+use crate::tab::{tab_position_id, SelectedTabColor, TabData, TabKind};
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::TerminalView;
 use crate::themes::theme::Fill as ThemeFill;
@@ -567,6 +569,18 @@ pub(super) struct VerticalTabsPanelState {
     detail_overlay_state: Arc<Mutex<VerticalTabsDetailOverlayState>>,
     new_tab_hover_state: MouseStateHandle,
     new_tab_button_state: MouseStateHandle,
+    /// Solo-style: persistent per-project mouse states for the +Terminal /
+    /// +Agent affordances rendered next to each project header. Keyed by the
+    /// project's path string (`"__ungrouped__"` sentinel for the Ungrouped
+    /// bucket). Created lazily on first render; pruned implicitly because
+    /// `HashMap` entries never grow without an open project.
+    solo_project_header_states: RefCell<HashMap<String, SoloProjectHeaderState>>,
+    /// Solo-style: mouse state for the "Add Project" button in the control bar.
+    solo_add_project_button_state: MouseStateHandle,
+    /// Solo-style: keys of project groups the user has collapsed (hiding their
+    /// Agents / Terminals sections). Keyed like `solo_project_header_key`.
+    /// In-memory only — collapse state resets on restart.
+    pub(super) collapsed_projects: std::collections::HashSet<String>,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
     panes_segment_mouse_state: MouseStateHandle,
@@ -602,6 +616,9 @@ impl Default for VerticalTabsPanelState {
             detail_overlay_state: Arc::new(Mutex::new(VerticalTabsDetailOverlayState::default())),
             new_tab_hover_state: Default::default(),
             new_tab_button_state: Default::default(),
+            solo_project_header_states: RefCell::default(),
+            solo_add_project_button_state: Default::default(),
+            collapsed_projects: std::collections::HashSet::new(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
             panes_segment_mouse_state: Default::default(),
@@ -1262,16 +1279,21 @@ fn render_control_bar(
     let settings_button = render_settings_button(state, appearance);
     let new_tab_button = render_new_tab_button(state, workspace, appearance, app);
 
-    Container::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(CONTROL_BAR_SPACING)
-            .with_child(Shrinkable::new(1., search_bar).finish())
-            .with_child(settings_button)
-            .with_child(new_tab_button)
-            .finish(),
-    )
+    let mut control_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(CONTROL_BAR_SPACING)
+        .with_child(Shrinkable::new(1., search_bar).finish());
+    // Solo-style: "Add Project" button, shown only when project grouping is on.
+    if FeatureFlag::ProjectGroupedTabs.is_enabled()
+        && *TabSettings::as_ref(app).use_project_grouping
+    {
+        control_row.add_child(render_solo_add_project_button(state, appearance, app));
+    }
+    control_row.add_child(settings_button);
+    control_row.add_child(new_tab_button);
+
+    Container::new(control_row.finish())
     .with_padding(
         Padding::uniform(CONTROL_BAR_VERTICAL_PADDING)
             .with_left(GROUP_HORIZONTAL_PADDING)
@@ -1330,6 +1352,78 @@ fn render_detail_kind_badge_icon(
             typed.icon().to_warpui_icon(fill).finish()
         }
     }
+}
+
+/// Solo-style: control-bar "Add Project" button. Opens the folder picker
+/// (`WorkspaceAction::AddProject`) — the chosen folder is upserted as a
+/// project and rendered as a new group in the sidebar.
+fn render_solo_add_project_button(
+    state: &VerticalTabsPanelState,
+    appearance: &Appearance,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let theme = appearance.theme();
+    let sub_text = theme.sub_text_color(theme.background());
+    let ui_builder = appearance.ui_builder().clone();
+    // Resolve the live "Add Project" chord (default Cmd+K) for the tooltip.
+    let add_project_keybinding =
+        keybinding_name_to_display_string("workspace:add_project", app);
+
+    Hoverable::new(
+        state.solo_add_project_button_state.clone(),
+        move |hover_state| {
+            let icon = ConstrainedBox::new(
+                WarpIcon::Folder.to_warpui_icon(sub_text).finish(),
+            )
+            .with_width(16.)
+            .with_height(16.)
+            .finish();
+
+            let background = if hover_state.is_hovered() {
+                internal_colors::fg_overlay_2(theme)
+            } else {
+                ThemeFill::Solid(ColorU::transparent_black())
+            };
+
+            let button_container = Container::new(icon)
+                .with_padding(Padding::uniform(2.))
+                .with_background(background)
+                .with_corner_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS))
+                .finish();
+
+            if hover_state.is_hovered() {
+                let tooltip = if let Some(sublabel) = add_project_keybinding.clone() {
+                    ui_builder
+                        .tool_tip_with_sublabel("Add Project".to_string(), sublabel)
+                        .build()
+                        .finish()
+                } else {
+                    ui_builder
+                        .tool_tip("Add Project".to_string())
+                        .build()
+                        .finish()
+                };
+                let mut stack = Stack::new().with_child(button_container);
+                stack.add_positioned_overlay_child(
+                    tooltip,
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., 4.),
+                        ParentOffsetBounds::WindowByPosition,
+                        ParentAnchor::BottomMiddle,
+                        ChildAnchor::TopMiddle,
+                    ),
+                );
+                stack.finish()
+            } else {
+                button_container
+            }
+        },
+    )
+    .on_click(|ctx, _, _| {
+        ctx.dispatch_typed_action(WorkspaceAction::AddProject);
+    })
+    .with_cursor(Cursor::PointingHand)
+    .finish()
 }
 
 fn render_settings_button(
@@ -1550,7 +1644,14 @@ fn render_groups(
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
 
-    if workspace.tabs.is_empty() {
+    // Solo-style project grouping gate (compile-time flag + user setting).
+    // When on, the sidebar always renders every known project with Agents /
+    // Terminals sections — even with zero open tabs — so the empty-tabs
+    // early-return below is skipped.
+    let project_grouping_enabled = FeatureFlag::ProjectGroupedTabs.is_enabled()
+        && *TabSettings::as_ref(app).use_project_grouping;
+
+    if workspace.tabs.is_empty() && !project_grouping_enabled {
         return Container::new(
             Text::new_inline("No tabs open", appearance.ui_font_family(), 12.)
                 .with_color(theme.sub_text_color(theme.background()).into())
@@ -1674,7 +1775,7 @@ fn render_groups(
             .collect()
     };
 
-    if visible_tabs.is_empty() {
+    if visible_tabs.is_empty() && !project_grouping_enabled {
         if query.is_empty() {
             return Empty::new().finish();
         } else {
@@ -1703,31 +1804,46 @@ fn render_groups(
         groups = groups.with_spacing(TABS_MODE_ITEM_SPACING);
     }
 
-    for (visible_tab_index, (tab_index, filtered_pane_ids)) in visible_tabs.iter().enumerate() {
-        // Insert ghost slot before this tab group if the drop would land here.
-        if ghost_insertion_index == Some(*tab_index) {
-            groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
-        }
-        let insert_before_index = *tab_index;
-        let insert_after_index =
-            (visible_tab_index == visible_tabs.len() - 1).then_some(tab_index + 1);
-        groups.add_child(render_tab_group(
+    if project_grouping_enabled {
+        // Solo-style: iterate the *project list*, not the open tabs, so every
+        // known project always renders with Agents + Terminals sections —
+        // even with zero open tabs.
+        solo_render_project_groups(
+            &mut groups,
+            &visible_tabs,
             state,
             workspace,
-            *tab_index,
-            &workspace.tabs[*tab_index],
-            filtered_pane_ids.as_deref(),
-            TabGroupDragState {
-                is_any_pane_dragging,
-                insert_before_index,
-                insert_after_index,
-            },
+            is_any_pane_dragging,
             app,
-        ));
-    }
-    // Ghost after all tab groups (fencepost).
-    if ghost_insertion_index == Some(workspace.tabs.len()) {
-        groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
+        );
+    } else {
+        for (visible_tab_index, (tab_index, filtered_pane_ids)) in visible_tabs.iter().enumerate()
+        {
+            // Insert ghost slot before this tab group if the drop would land here.
+            if ghost_insertion_index == Some(*tab_index) {
+                groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
+            }
+            let insert_before_index = *tab_index;
+            let insert_after_index =
+                (visible_tab_index == visible_tabs.len() - 1).then_some(tab_index + 1);
+            groups.add_child(render_tab_group(
+                state,
+                workspace,
+                *tab_index,
+                &workspace.tabs[*tab_index],
+                filtered_pane_ids.as_deref(),
+                TabGroupDragState {
+                    is_any_pane_dragging,
+                    insert_before_index,
+                    insert_after_index,
+                },
+                app,
+            ));
+        }
+        // Ghost after all tab groups (fencepost).
+        if ghost_insertion_index == Some(workspace.tabs.len()) {
+            groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
+        }
     }
 
     // Prune stale badge mouse states for panes that no longer exist.
@@ -1778,6 +1894,390 @@ fn render_tab_group(
         false,
         app,
     )
+}
+
+// ============================================================================
+// Solo-style project-grouped sidebar helpers (FeatureFlag::ProjectGroupedTabs)
+// ============================================================================
+
+/// Sentinel key used for the "Ungrouped" bucket's mouse-state map entry —
+/// tabs whose `project_path` is `None` end up under this synthetic header.
+/// The literal can't collide with a real path on any supported OS because
+/// no real filesystem path equals this exact string.
+const SOLO_UNGROUPED_KEY: &str = "__solo_ungrouped__";
+
+/// Per-project header mouse state: handles for the +Terminal and +Agent
+/// buttons plus a hover state for the header row itself. Stored in
+/// `VerticalTabsPanelState.solo_project_header_states` so they persist across
+/// renders (default-constructing each render would lose interaction state and
+/// cause clicks to drop — see WarpUI guideline against inline `Default`).
+#[derive(Default, Clone)]
+struct SoloProjectHeaderState {
+    new_terminal_button: MouseStateHandle,
+    new_agent_button: MouseStateHandle,
+}
+
+fn solo_project_header_key(project_path: Option<&Path>) -> String {
+    match project_path {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => SOLO_UNGROUPED_KEY.to_string(),
+    }
+}
+
+/// Ensures a `SoloProjectHeaderState` exists for `key`, returning a clone of
+/// its handles. The `RefCell` borrow is dropped before the clone is returned,
+/// so the caller is free to hold the clone across other state mutations.
+fn solo_project_header_state(
+    state: &VerticalTabsPanelState,
+    key: &str,
+) -> SoloProjectHeaderState {
+    let mut map = state.solo_project_header_states.borrow_mut();
+    map.entry(key.to_string()).or_default().clone()
+}
+
+/// Top-level entry point for the Solo-style project-grouped sidebar layout.
+/// Iterates the *project list* (not the open tabs) so every known project
+/// always renders with Agents + Terminals sections — even with zero tabs.
+/// Tabs whose `project_path` is `None` (or points to a removed project) are
+/// collected into a trailing "Ungrouped" section.
+fn solo_render_project_groups(
+    groups: &mut Flex,
+    visible_tabs: &[(usize, Option<Vec<PaneId>>)],
+    state: &VerticalTabsPanelState,
+    workspace: &Workspace,
+    is_any_pane_dragging: bool,
+    app: &AppContext,
+) {
+    // Bucket visible tabs by their project key.
+    let mut by_project: HashMap<Option<PathBuf>, Vec<(usize, Option<Vec<PaneId>>)>> =
+        HashMap::new();
+    for (tab_index, panes) in visible_tabs {
+        let key = workspace.tabs[*tab_index].project_path.clone();
+        by_project
+            .entry(key)
+            .or_default()
+            .push((*tab_index, panes.clone()));
+    }
+
+    // Projects from the model in a STABLE order: sorted by `added_ts`
+    // ascending (first added → top). Deliberately NOT sorted by
+    // `last_opened_ts` — that would make a project jump to the top every time
+    // a tab is opened in it, which the user explicitly does not want.
+    let model = ProjectManagementModel::handle(app);
+    let mut projects: Vec<(PathBuf, chrono::NaiveDateTime)> = model
+        .as_ref(app)
+        .all_projects()
+        .map(|p| (PathBuf::from(&p.path), p.added_ts))
+        .collect();
+    projects.sort_by(|a, b| a.1.cmp(&b.1));
+    let known: std::collections::HashSet<PathBuf> =
+        projects.iter().map(|(p, _)| p.clone()).collect();
+
+    let query_active = !state.search_query.is_empty();
+
+    if projects.is_empty() && visible_tabs.is_empty() {
+        // Zero projects, zero tabs — show a gentle hint instead of a blank panel.
+        let appearance = Appearance::as_ref(app);
+        let theme = appearance.theme();
+        groups.add_child(
+            Container::new(
+                Text::new_inline(
+                    "No projects yet. Click + Add Project above.",
+                    appearance.ui_font_family(),
+                    12.,
+                )
+                .with_color(theme.sub_text_color(theme.background()).into())
+                .finish(),
+            )
+            .with_padding(Padding::uniform(12.))
+            .finish(),
+        );
+        return;
+    }
+
+    for (project_path, _) in &projects {
+        let tabs_here = by_project
+            .get(&Some(project_path.clone()))
+            .cloned()
+            .unwrap_or_default();
+        // While searching, hide projects with no matching tabs.
+        if query_active && tabs_here.is_empty() {
+            continue;
+        }
+        solo_render_one_project(
+            groups,
+            Some(project_path.as_path()),
+            &tabs_here,
+            state,
+            workspace,
+            is_any_pane_dragging,
+            app,
+        );
+    }
+
+    // "Ungrouped": tabs with no project, or pointing at a project no longer
+    // in the model. Rendered only when non-empty.
+    let mut ungrouped: Vec<(usize, Option<Vec<PaneId>>)> = Vec::new();
+    for (key, tabs) in &by_project {
+        let is_known = key.as_ref().is_some_and(|p| known.contains(p));
+        if !is_known {
+            ungrouped.extend(tabs.iter().cloned());
+        }
+    }
+    ungrouped.sort_by_key(|(tab_index, _)| *tab_index);
+    if !ungrouped.is_empty() {
+        solo_render_one_project(
+            groups,
+            None,
+            &ungrouped,
+            state,
+            workspace,
+            is_any_pane_dragging,
+            app,
+        );
+    }
+}
+
+/// Renders a single project block: header + Agents section + Terminals
+/// section. `project_path = None` renders the "Ungrouped" block (no add
+/// buttons — a tab can't be tagged with a non-existent project).
+fn solo_render_one_project(
+    groups: &mut Flex,
+    project_path: Option<&Path>,
+    tabs: &[(usize, Option<Vec<PaneId>>)],
+    state: &VerticalTabsPanelState,
+    workspace: &Workspace,
+    is_any_pane_dragging: bool,
+    app: &AppContext,
+) {
+    let key = solo_project_header_key(project_path);
+    let collapsed = state.collapsed_projects.contains(&key);
+    groups.add_child(render_solo_project_header(project_path, collapsed, app));
+
+    // Collapsed → render only the header, hiding all sections + tabs.
+    if collapsed {
+        return;
+    }
+
+    let tabs_of_kind = |kind: TabKind| -> Vec<(usize, Option<Vec<PaneId>>)> {
+        tabs.iter()
+            .filter(|(tab_index, _)| workspace.tabs[*tab_index].kind == kind)
+            .cloned()
+            .collect()
+    };
+    // Solo order: Agents above Terminals.
+    for kind in [TabKind::Agent, TabKind::Terminal] {
+        let kind_tabs = tabs_of_kind(kind);
+        groups.add_child(render_solo_subsection_label(
+            kind,
+            kind_tabs.len(),
+            project_path,
+            state,
+            app,
+        ));
+        for (tab_index, filtered_pane_ids) in &kind_tabs {
+            groups.add_child(render_tab_group(
+                state,
+                workspace,
+                *tab_index,
+                &workspace.tabs[*tab_index],
+                filtered_pane_ids.as_deref(),
+                TabGroupDragState {
+                    is_any_pane_dragging,
+                    insert_before_index: *tab_index,
+                    insert_after_index: None,
+                },
+                app,
+            ));
+        }
+    }
+}
+
+/// Renders a project header row: a full-bleed band (Solo-style) — a filled
+/// background spanning the entire sidebar width, framed by top + bottom
+/// hairlines (no side borders, no rounded corners), with a collapse chevron,
+/// a folder icon, and the project's directory name in semibold. Clicking the
+/// row collapses / expands the project. `project_path = None` → "Ungrouped".
+fn render_solo_project_header(
+    project_path: Option<&Path>,
+    collapsed: bool,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let main_text = theme.main_text_color(theme.background());
+    let icon_color = theme.sub_text_color(theme.background());
+    let label = match project_path {
+        Some(path) => path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string()),
+        None => "Ungrouped".to_string(),
+    };
+    let key = solo_project_header_key(project_path);
+
+    // Collapse / expand chevron.
+    let chevron = ConstrainedBox::new(
+        if collapsed {
+            WarpIcon::ChevronRight
+        } else {
+            WarpIcon::ChevronDown
+        }
+        .to_warpui_icon(icon_color)
+        .finish(),
+    )
+    .with_width(12.)
+    .with_height(12.)
+    .finish();
+
+    let folder = ConstrainedBox::new(
+        WarpIcon::Folder.to_warpui_icon(icon_color).finish(),
+    )
+    .with_width(13.)
+    .with_height(13.)
+    .finish();
+
+    // `MainAxisSize::Max` so the row — and the band that wraps it — spans the
+    // full sidebar width.
+    let mut content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.);
+    content.add_child(chevron);
+    content.add_child(folder);
+    content.add_child(
+        Text::new_inline(label, appearance.ui_font_family(), 12.)
+            .with_color(main_text.into())
+            .with_style(Properties::default().weight(Weight::Semibold))
+            .finish(),
+    );
+
+    // Full-bleed band: faint filled background + soft top/bottom hairlines only
+    // (no side borders, no corner radius) — the Solo-style section-divider look,
+    // kept deliberately low-prominence so it reads as a container, not a button.
+    let band = Container::new(content.finish())
+        .with_background(internal_colors::fg_overlay_1(theme))
+        .with_border(
+            Border::new(1.)
+                .with_sides(true, false, true, false)
+                .with_border_fill(internal_colors::fg_overlay_2(theme)),
+        )
+        .with_padding(
+            Padding::uniform(7.)
+                .with_left(GROUP_HORIZONTAL_PADDING)
+                .with_right(GROUP_HORIZONTAL_PADDING),
+        )
+        .finish();
+
+    let spaced = Container::new(band)
+        .with_padding(Padding::uniform(0.).with_top(10.).with_bottom(2.))
+        .finish();
+
+    // Clicking the header row toggles collapse / expand for this project.
+    EventHandler::new(spaced)
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
+                project_key: key.clone(),
+            });
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
+/// Resolves the user's default CLI agent from the `agents.default_cli_agent`
+/// setting (unknown / empty → Claude). Used by the Solo `+Agent` buttons.
+fn solo_default_agent(app: &AppContext) -> CLIAgent {
+    let ai = AISettings::as_ref(app);
+    let parsed = CLIAgent::from_serialized_name(ai.default_cli_agent.as_str());
+    if matches!(parsed, CLIAgent::Unknown) {
+        CLIAgent::Claude
+    } else {
+        parsed
+    }
+}
+
+/// Renders an "AGENTS" / "TERMINALS" sub-section header row: label + count on
+/// the left, a `+` add button on the right. The `+` button is rendered for
+/// every section — including "Ungrouped" — so a terminal / agent can be
+/// created from anywhere (`project_path = None` → an ungrouped tab).
+fn render_solo_subsection_label(
+    kind: TabKind,
+    count: usize,
+    project_path: Option<&Path>,
+    state: &VerticalTabsPanelState,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let sub_text = theme.sub_text_color(theme.background());
+    let main_text = theme.main_text_color(theme.background());
+    let label = match kind {
+        TabKind::Terminal => "TERMINALS",
+        TabKind::Agent => "AGENTS",
+    };
+    let label_text = if count > 0 {
+        format!("{label}  {count}")
+    } else {
+        label.to_string()
+    };
+
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    row.add_child(
+        Text::new_inline(label_text, appearance.ui_font_family(), 10.)
+            .with_color(sub_text.into())
+            .finish(),
+    );
+
+    // `+` add button — present for every section, including Ungrouped.
+    let key = solo_project_header_key(project_path);
+    let header_state = solo_project_header_state(state, &key);
+    let owned_path = project_path.map(Path::to_path_buf);
+    let (mouse_state, action) = match kind {
+        TabKind::Terminal => (
+            header_state.new_terminal_button.clone(),
+            WorkspaceAction::AddProjectTerminalTab {
+                project_path: owned_path,
+            },
+        ),
+        TabKind::Agent => (
+            header_state.new_agent_button.clone(),
+            WorkspaceAction::AddProjectAgentTab {
+                project_path: owned_path,
+                agent: solo_default_agent(app),
+            },
+        ),
+    };
+    // Ghosted `+`: a faint, disabled-weight color so the affordance recedes and
+    // the section content leads. It brightens to `main_text` on hover/press.
+    let ghost_color = theme.disabled_text_color(theme.background());
+    let add_button = combo_inner_button(appearance, UiIcon::Plus, false, mouse_state)
+        .with_style(
+            UiComponentStyles::default()
+                .set_border_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                .set_font_color(ghost_color.into()),
+        )
+        .with_active_styles(
+            UiComponentStyles::default()
+                .set_background(internal_colors::fg_overlay_3(theme).into())
+                .set_font_color(main_text.into()),
+        )
+        .build()
+        .on_click(move |ctx, _, _position| {
+            ctx.dispatch_typed_action(action.clone());
+        })
+        .finish();
+    row.add_child(add_button);
+
+    Container::new(row.finish())
+        .with_padding(
+            Padding::uniform(2.)
+                .with_horizontal(GROUP_HORIZONTAL_PADDING + 4.)
+                .with_top(4.),
+        )
+        .finish()
 }
 
 #[allow(clippy::too_many_arguments)]

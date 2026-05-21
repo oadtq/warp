@@ -2969,6 +2969,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::HoaCodeReview,
         #[cfg(feature = "vertical_tabs")]
         FeatureFlag::VerticalTabs,
+        #[cfg(feature = "project_grouped_tabs")]
+        FeatureFlag::ProjectGroupedTabs,
         #[cfg(feature = "vertical_tabs_summary_mode")]
         FeatureFlag::VerticalTabsSummaryMode,
         #[cfg(feature = "tab_configs")]

@@ -723,6 +723,19 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.warp_agent.is_any_ai_enabled",
         description: "Controls whether all AI features are enabled.",
     },
+    // Solo-style: the default CLI agent launched by Cmd+Option+A or the "(+)
+    // Agent" picker's first row. Stored as the serialized `CLIAgent` name
+    // (e.g. `"Claude"`, `"Codex"`, `"Droid"`). Validated at read time via
+    // `CLIAgent::from_serialized_name` — unknown strings fall back to Claude.
+    default_cli_agent: DefaultCliAgent {
+        type: String,
+        default: "Claude".to_string(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.default_cli_agent",
+        description: "Default CLI agent launched by Cmd+Option+A and the project +Agent picker's first row.",
+    },
     // This field should not be referenced directly to lookup active AI enablement -- use the
     // `is_active_ai_enabled()` getter.
     is_active_ai_enabled_internal: IsActiveAIEnabled {

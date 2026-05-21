@@ -24,6 +24,7 @@ use crate::settings_view::{SettingsAction as SettingsTabAction, SettingsSection}
 use crate::tab::{NewSessionMenuItem, SelectedTabColor};
 use crate::tab_configs::TabConfig;
 use crate::terminal::available_shells::AvailableShell;
+use crate::terminal::CLIAgent;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::themes::theme_chooser::ThemeChooserMode;
@@ -162,6 +163,39 @@ pub enum WorkspaceAction {
     AddAmbientAgentTab,
     /// Add a new tab that immediately enters agent view with a new conversation.
     AddAgentTab,
+    // === Solo-style project-grouped tabs (FeatureFlag::ProjectGroupedTabs) ===
+    /// Open the folder picker to add a new project to the sidebar (idempotent
+    /// upsert into the `projects` table). Does NOT auto-open a tab — matches
+    /// Solo's "add project, then add terminals/agents into it" UX.
+    AddProject,
+    /// Open a new terminal tab tagged with `TabKind::Terminal`. When
+    /// `project_path` is `Some`, the shell opens in that directory and the tab
+    /// renders under that project's Terminals section; `None` opens an
+    /// ungrouped terminal (Ungrouped → Terminals section).
+    AddProjectTerminalTab {
+        project_path: Option<PathBuf>,
+    },
+    /// Open a new terminal tab tagged with `TabKind::Agent` that auto-runs the
+    /// CLI agent's trigger command (`claude`, `codex`, etc). `project_path =
+    /// Some` opens it in that project's directory + section; `None` opens an
+    /// ungrouped agent.
+    AddProjectAgentTab {
+        project_path: Option<PathBuf>,
+        agent: CLIAgent,
+    },
+    /// Launch the user-configured default CLI agent (settings key
+    /// `agents.default_agent`) in a new tab. If `project_path` is `None`, falls
+    /// back to the most-recently-opened project. Bound to Cmd+Shift+A by
+    /// default (user-overridable via `~/.warp/keybindings.yaml`).
+    AddDefaultAgentTab {
+        project_path: Option<PathBuf>,
+    },
+    /// Collapse / expand a Solo-style project group in the vertical-tabs
+    /// sidebar. `project_key` is the project path string (or the Ungrouped
+    /// sentinel). Pure in-memory UI state — not persisted across restarts.
+    ToggleSoloProjectCollapsed {
+        project_key: String,
+    },
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
     OpenNewSessionMenu {
@@ -780,6 +814,10 @@ impl WorkspaceAction {
             | AddAgentTab
             | AddAmbientAgentTab
             | AddDockerSandboxTab
+            | AddProject
+            | AddProjectTerminalTab { .. }
+            | AddProjectAgentTab { .. }
+            | AddDefaultAgentTab { .. }
             | AddWindow
             | AddWindowWithShell { .. }
             | CloseWindow
@@ -818,6 +856,7 @@ impl WorkspaceAction {
             | ResetZoom
             | OpenPalette { .. }
             | TogglePalette { mode: _, source: _ }
+            | ToggleSoloProjectCollapsed { .. }
             | ShowUpgrade
             | ShowReferralSettingsPage
             | JoinSlack

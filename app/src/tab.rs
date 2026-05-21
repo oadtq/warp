@@ -9,6 +9,7 @@ use crate::launch_configs::launch_config::LaunchConfig;
 use crate::menu::{MenuAction, MenuItem, MenuItemFields};
 use crate::pane_group::{PaneGroup, PaneId};
 use settings::Setting as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -125,6 +126,16 @@ pub struct PaneNameMenuTarget {
     pub reset_label: &'static str,
 }
 
+/// Identifies whether a tab is a "plain" terminal or a tab that was launched as a CLI agent
+/// session (e.g. via `+agent` or Cmd+Shift+A). Used by the Solo-style project-grouped sidebar
+/// to render Terminals vs Agents sub-sections inside a project group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TabKind {
+    #[default]
+    Terminal,
+    Agent,
+}
+
 /// TabData struct holds the state of the given tab. It includes the pane group and mouse states
 /// used for closing the tab or tracking the mouse over the rendered tab.
 /// It has to be "stored" by some View to persist its state.
@@ -145,6 +156,12 @@ pub struct TabData {
     pub indicator_hover_state: MouseStateHandle,
     // Used by a later drag-tab branch to distinguish tabs that have moved into detached windows.
     pub detached: bool,
+    /// Solo-style project this tab belongs to. `None` → renders under the "Ungrouped"
+    /// section of the vertical tabs sidebar when `FeatureFlag::ProjectGroupedTabs` is on.
+    pub project_path: Option<PathBuf>,
+    /// Whether the tab is a plain terminal or a CLI-agent session. Drives which
+    /// sub-section (Terminals vs Agents) of its project group renders the tab.
+    pub kind: TabKind,
 }
 
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
@@ -162,7 +179,17 @@ impl TabData {
             selected_color: SelectedTabColor::Unset,
             indicator_hover_state: Default::default(),
             detached: false,
+            project_path: None,
+            kind: TabKind::Terminal,
         }
+    }
+
+    /// Tag this tab with a project + kind (used by Solo-style sidebar grouping).
+    /// Chainable so callers can write `TabData::new(...).with_project(path, TabKind::Agent)`.
+    pub fn with_project(mut self, project_path: PathBuf, kind: TabKind) -> Self {
+        self.project_path = Some(project_path);
+        self.kind = kind;
+        self
     }
 
     /// The resolved tab color: manual selection takes priority over directory default.

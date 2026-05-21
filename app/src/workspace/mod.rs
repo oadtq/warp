@@ -89,8 +89,9 @@ pub fn is_feedback_skill_available(ctx: &AppContext) -> bool {
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
-    NEW_AGENT_TAB_BINDING_NAME, NEW_AMBIENT_AGENT_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME,
-    NEW_TERMINAL_TAB_BINDING_NAME, OPEN_GLOBAL_SEARCH_BINDING_NAME,
+    NEW_AGENT_TAB_BINDING_NAME, NEW_AMBIENT_AGENT_TAB_BINDING_NAME,
+    NEW_DEFAULT_CLI_AGENT_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME, NEW_TERMINAL_TAB_BINDING_NAME,
+    OPEN_GLOBAL_SEARCH_BINDING_NAME,
     TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME, TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME,
     TOGGLE_PROJECT_EXPLORER_BINDING_NAME, TOGGLE_RIGHT_PANEL_BINDING_NAME,
     TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME, TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME,
@@ -724,6 +725,19 @@ pub fn init(app: &mut AppContext) {
         .with_enabled(|| {
             FeatureFlag::AgentView.is_enabled() && FeatureFlag::CloudMode.is_enabled()
         }),
+        // Solo-style: launch the configured default CLI agent (Claude, Codex, Droid…)
+        // in a new project-tagged tab. Default chord = Cmd+Shift+A, non-conflicting
+        // with Warp's existing Cmd+Shift+T. User-overridable via
+        // `~/.warp/keybindings.yaml`.
+        EditableBinding::new(
+            NEW_DEFAULT_CLI_AGENT_TAB_BINDING_NAME,
+            BindingDescription::new("New Default CLI Agent Tab"),
+            WorkspaceAction::AddDefaultAgentTab { project_path: None },
+        )
+        .with_mac_key_binding("cmd-shift-A")
+        .with_linux_or_windows_key_binding("ctrl-shift-A")
+        .with_context_predicate(id!("Workspace") & !id!("Workspace_PaneDragging"))
+        .with_enabled(|| FeatureFlag::ProjectGroupedTabs.is_enabled()),
         EditableBinding::new(
             "workspace:toggle_left_panel",
             BindingDescription::new("Open Left Panel"),
@@ -1302,6 +1316,23 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("Workspace"))
         .with_custom_action(CustomAction::OpenRepository)
         .with_group(bindings::BindingGroup::Folders.as_str()),
+        // Solo-style: "Add Project" — opens the folder picker, upserts the
+        // project (no auto-tab); the sidebar then groups +terminal/+agent
+        // launches under it. Default chord Cmd+K (Cmd+O and Cmd+Shift+P are
+        // claimed by the OS "Open" menu item / command palette respectively;
+        // Cmd+K is verified free). Also reachable from the sidebar folder
+        // button. User-overridable via `~/.warp/keybindings.yaml`.
+        EditableBinding::new(
+            "workspace:add_project",
+            BindingDescription::new("Add Project")
+                .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Add Project"),
+            WorkspaceAction::AddProject,
+        )
+        .with_mac_key_binding("cmd-k")
+        .with_linux_or_windows_key_binding("ctrl-k")
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Folders.as_str())
+        .with_enabled(|| FeatureFlag::ProjectGroupedTabs.is_enabled()),
         EditableBinding::new(
             "workspace:open_ai_fact_collection",
             BindingDescription::new("Open AI Rules")

@@ -756,6 +756,12 @@ pub enum FeatureFlag {
     /// Enables vertical tab layout as an alternative to the horizontal tab bar.
     VerticalTabs,
 
+    /// Enables Solo-style project-grouped tabs in the vertical tabs sidebar. When on,
+    /// tabs are bucketed by `TabData.project_path` and rendered under project headers
+    /// with Terminals / Agents sub-sections. Adds the +terminal / +agent affordances
+    /// and the Cmd+Shift+A "launch default CLI agent" action.
+    ProjectGroupedTabs,
+
     /// Enables attaching code review comments, diff hunk, and attach as context
     /// from code review + code editor for House Of Agents work
     HoaCodeReview,
