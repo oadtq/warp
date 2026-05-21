@@ -360,6 +360,11 @@ diesel::table! {
         window_id -> Integer,
         custom_title -> Nullable<Text>,
         color -> Nullable<Text>,
+        // Solo-style project grouping (FeatureFlag::ProjectGroupedTabs).
+        // `project_path` is the directory path the tab was opened in; NULL →
+        // "Ungrouped" on restore. `tab_kind` is one of "terminal" / "agent".
+        project_path -> Nullable<Text>,
+        tab_kind -> Nullable<Text>,
     }
 }
 

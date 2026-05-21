@@ -967,6 +967,15 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                         SelectedTabColor::Unset => None,
                         _ => serde_yaml::to_string(&tab.selected_color).ok(),
                     },
+                    // Solo-style project grouping persistence.
+                    project_path: tab
+                        .project_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    tab_kind: tab.kind.map(|k| match k {
+                        crate::tab::TabKind::Terminal => "terminal".to_string(),
+                        crate::tab::TabKind::Agent => "agent".to_string(),
+                    }),
                 })
                 .collect();
 
@@ -2780,6 +2789,15 @@ fn read_sqlite_data(
                             .unwrap_or_default(),
                         left_panel,
                         right_panel,
+                        // Solo-style project grouping restore. Unknown
+                        // `tab_kind` strings or missing values default to
+                        // `None` → callers treat as `TabKind::Terminal`.
+                        project_path: tab.project_path.map(std::path::PathBuf::from),
+                        kind: tab.tab_kind.as_deref().and_then(|k| match k {
+                            "terminal" => Some(crate::tab::TabKind::Terminal),
+                            "agent" => Some(crate::tab::TabKind::Agent),
+                            _ => None,
+                        }),
                     })
                 })
                 .collect();

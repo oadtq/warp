@@ -67,6 +67,12 @@ pub struct TabSnapshot {
     pub selected_color: SelectedTabColor,
     pub left_panel: Option<LeftPanelSnapshot>,
     pub right_panel: Option<RightPanelSnapshot>,
+    /// Solo-style project grouping: the project this tab belongs to and
+    /// whether it was launched as a CLI agent session. `project_path = None`
+    /// → restores under the "Ungrouped" bucket; `kind = None` → defaults to
+    /// `TabKind::Terminal`. Both round-trip through the `tabs` table.
+    pub project_path: Option<std::path::PathBuf>,
+    pub kind: Option<crate::tab::TabKind>,
 }
 
 impl TabSnapshot {

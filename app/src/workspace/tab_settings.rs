@@ -488,6 +488,15 @@ define_settings_group!(TabSettings, settings: [
         toml_path: "appearance.vertical_tabs.enabled",
         description: "Whether to display tabs vertically instead of horizontally.",
     },
+    use_project_grouping: UseProjectGrouping {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "appearance.vertical_tabs.use_project_grouping",
+        description: "Solo-style: group tabs under project headers with Terminals / Agents sub-sections in the vertical-tabs sidebar. Disable to fall back to a flat tab list.",
+    },
     show_vertical_tab_panel_in_restored_windows: ShowVerticalTabPanelInRestoredWindows {
         type: bool,
         default: false,

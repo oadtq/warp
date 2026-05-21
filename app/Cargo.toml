@@ -625,6 +625,7 @@ default = [
     "vertical_tabs",
     "vertical_tabs_summary_mode",
     "tab_configs",
+    "project_grouped_tabs",
     "agent_harness",
     "hoa_onboarding_flow",
     "hoa_remote_control",
@@ -939,6 +940,11 @@ hoa_code_review = []
 vertical_tabs = []
 vertical_tabs_summary_mode = []
 tab_configs = []
+# Solo-style project-grouped tabs (project headers + Terminals/Agents
+# sub-sections, +terminal/+agent buttons, default-agent shortcut). On by
+# default; users disable at runtime via the
+# `appearance.vertical_tabs.use_project_grouping` setting.
+project_grouped_tabs = []
 agent_harness = []
 oz_handoff = []
 handoff_local_cloud = []

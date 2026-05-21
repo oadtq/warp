@@ -494,8 +494,9 @@ use crate::search::command_palette::view::{Event as CommandPaletteEvent, View as
 use crate::server::telemetry::{NotificationsTurnedOnSource, PaletteSource, TabRenameEvent};
 use crate::tab::{
     tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor,
-    TabBarState, TabComponent, TabData, TabTelemetryAction, TAB_BAR_BORDER_HEIGHT,
+    TabBarState, TabComponent, TabData, TabKind, TabTelemetryAction, TAB_BAR_BORDER_HEIGHT,
 };
+use crate::terminal::CLIAgent;
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::ui_components::icons;
 use crate::TelemetryEvent;
@@ -645,6 +646,10 @@ pub(crate) const TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME: &str =
 pub(crate) const NEW_TAB_BINDING_NAME: &str = "workspace:new_tab";
 pub(crate) const NEW_TERMINAL_TAB_BINDING_NAME: &str = "workspace:new_terminal_tab";
 pub(crate) const NEW_AGENT_TAB_BINDING_NAME: &str = "workspace:new_agent_tab";
+/// Cmd+Shift+A — launch the user-configured default CLI agent. See
+/// `WorkspaceAction::AddDefaultAgentTab`.
+pub(crate) const NEW_DEFAULT_CLI_AGENT_TAB_BINDING_NAME: &str =
+    "workspace:new_default_cli_agent_tab";
 pub(crate) const NEW_AMBIENT_AGENT_TAB_BINDING_NAME: &str = "workspace:new_ambient_agent_tab";
 pub(crate) const TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME: &str = "workspace:toggle_tab_configs_menu";
 
@@ -3495,6 +3500,10 @@ impl Workspace {
                 self.sync_window_button_visibility(ctx);
                 ctx.notify();
             }
+            TabSettingsChangedEvent::UseProjectGrouping { .. } => {
+                // Solo-style sidebar gates render on this setting; just re-render.
+                ctx.notify();
+            }
             TabSettingsChangedEvent::UseVerticalTabs { .. } => {
                 let vertical_tabs_enabled = *TabSettings::as_ref(ctx).use_vertical_tabs;
                 // During HOA onboarding, keep the vertical tabs panel open
@@ -3657,6 +3666,11 @@ impl Workspace {
                         self.tabs[tab_index].default_directory_color =
                             saved_tab.default_directory_color;
                         self.tabs[tab_index].selected_color = saved_tab.selected_color;
+                        // Solo-style project grouping restore. `None` kind →
+                        // default to Terminal (graceful for tabs persisted
+                        // before this migration).
+                        self.tabs[tab_index].project_path = saved_tab.project_path.clone();
+                        self.tabs[tab_index].kind = saved_tab.kind.unwrap_or_default();
 
                         let pane_group = self.tabs[tab_index].pane_group.clone();
 
@@ -10084,6 +10098,12 @@ impl Workspace {
                         .unwrap_or_default(),
                     left_panel,
                     right_panel,
+                    // Solo-style project grouping round-trip.
+                    project_path: self
+                        .tabs
+                        .get(tab_index)
+                        .and_then(|tab| tab.project_path.clone()),
+                    kind: self.tabs.get(tab_index).map(|tab| tab.kind),
                 }
             })
             .filter(|tab| {
@@ -11414,6 +11434,11 @@ impl Workspace {
             None,
             ctx,
         );
+        // Tag the freshly-opened tab so the Solo-style sidebar groups it.
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.project_path = Some(path_buf.clone());
+            tab.kind = TabKind::Terminal;
+        }
         self.active_tab_pane_group().update(ctx, |tab, ctx| {
             if let Some(active_terminal) = tab.active_session_view(ctx) {
                 active_terminal.update(ctx, |terminal, _| {
@@ -11421,6 +11446,153 @@ impl Workspace {
                 });
             }
         });
+    }
+
+    // ============================================================================
+    // Solo-style project-grouped tabs (FeatureFlag::ProjectGroupedTabs)
+    // ============================================================================
+
+    /// Returns the user-configured default CLI agent, read from the
+    /// `agents.default_cli_agent` setting (`AISettings.default_cli_agent`).
+    /// Stored as a serialized `CLIAgent` name (`"Claude"`, `"Codex"`, …) so
+    /// the settings crate has no dependency on the `app` enum. Unknown / empty
+    /// values fall back to `CLIAgent::Claude`.
+    fn solo_default_agent_helper(ctx: &AppContext) -> CLIAgent {
+        let ai = AISettings::as_ref(ctx);
+        let name = ai.default_cli_agent.as_str();
+        if name.is_empty() {
+            return CLIAgent::Claude;
+        }
+        let parsed = CLIAgent::from_serialized_name(name);
+        if matches!(parsed, CLIAgent::Unknown) {
+            log::warn!(
+                "Unknown default_cli_agent name {:?} in settings; falling back to Claude",
+                name
+            );
+            CLIAgent::Claude
+        } else {
+            parsed
+        }
+    }
+
+    /// Opens the native folder picker and, on success, upserts the chosen path
+    /// into the `projects` table without opening any tab. Mirrors
+    /// `open_repository` but skips the auto-tab creation — Solo's flow is "add
+    /// the project, then explicitly add terminals/agents into it".
+    fn add_project_via_picker(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.open_file_picker(
+            |result, ctx| match result {
+                Ok(paths) => {
+                    let Some(path) = paths.into_iter().next() else {
+                        return;
+                    };
+                    let path_buf = PathBuf::from(&path);
+                    ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+                        projects.upsert_project(path_buf, ctx);
+                    });
+                    if let Some(handle) = ctx.handle().upgrade(ctx) {
+                        handle.update(ctx, |_workspace, ctx| ctx.notify());
+                    }
+                }
+                Err(err) => {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::error(format!("{err}")),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+            },
+            FilePickerConfiguration::new().folders_only(),
+        );
+    }
+
+    /// Spawn a terminal tab tagged with `(project_path, kind)` so the Solo-style
+    /// sidebar groups it under the right section. `project_path = None` opens an
+    /// ungrouped tab (no directory tagging — lands in the "Ungrouped" group).
+    /// When `startup_command` is `Some(...)`, the command is auto-typed into the
+    /// shell once it's ready (via `set_pending_command_queue`).
+    ///
+    /// NOTE: deliberately does NOT call `upsert_project` — bumping
+    /// `last_opened_ts` on every tab open would reorder the sidebar (projects
+    /// jumping to the top). Project order is stable; see `solo_render_project_groups`.
+    fn add_project_tagged_tab(
+        &mut self,
+        project_path: Option<PathBuf>,
+        kind: TabKind,
+        startup_command: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let opts = NewTerminalOptions {
+            initial_directory: project_path.clone(),
+            hide_homepage: true,
+            startup_command,
+            ..Default::default()
+        };
+        self.add_tab_with_pane_layout(
+            PanesLayout::SingleTerminal(Box::new(opts)),
+            Arc::new(HashMap::new()),
+            None,
+            ctx,
+        );
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.project_path = project_path;
+            tab.kind = kind;
+        }
+        ctx.notify();
+    }
+
+    /// Resolves the default CLI agent + target project and dispatches to
+    /// `add_project_tagged_tab`. Used by the Cmd+Shift+A keybinding.
+    fn add_default_agent_tab(
+        &mut self,
+        project_path: Option<PathBuf>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // 1. Resolve project: explicit arg → currently active project tab →
+        //    most-recently-opened project. No project at all → bail with toast.
+        let resolved_project = project_path
+            .or_else(|| {
+                self.tabs
+                    .get(self.active_tab_index)
+                    .and_then(|t| t.project_path.clone())
+            })
+            .or_else(|| {
+                ProjectManagementModel::handle(ctx)
+                    .as_ref(ctx)
+                    .all_projects()
+                    .max_by_key(|p| p.last_opened_ts)
+                    .map(|p| PathBuf::from(&p.path))
+            });
+        let Some(project_path) = resolved_project else {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        "No project to launch the default agent in. Add a project first."
+                            .to_string(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+            return;
+        };
+        // 2. Default agent: read from settings → fall back to Claude.
+        let agent = Self::solo_default_agent_helper(ctx);
+        let cmd = agent.command_prefix();
+        let command = if cmd.is_empty() {
+            log::warn!(
+                "Default CLI agent {:?} has no command_prefix; falling back to Claude",
+                agent
+            );
+            CLIAgent::Claude.command_prefix().to_string()
+        } else {
+            cmd.to_string()
+        };
+        self.add_project_tagged_tab(Some(project_path), TabKind::Agent, Some(command), ctx);
     }
 
     /// Navigate to an existing AI conversation, focusing on its terminal view, if it's open anywhere.
@@ -21185,6 +21357,37 @@ impl TypedActionView for Workspace {
             AddAmbientAgentTab => self.add_ambient_agent_tab(ctx),
             AddAgentTab => self.add_terminal_tab_with_new_agent_view(ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
+            // === Solo-style project-grouped tab actions ===
+            AddProject => self.add_project_via_picker(ctx),
+            AddProjectTerminalTab { project_path } => {
+                self.add_project_tagged_tab(project_path.clone(), TabKind::Terminal, None, ctx);
+            }
+            AddProjectAgentTab {
+                project_path,
+                agent,
+            } => {
+                let cmd = agent.command_prefix();
+                if cmd.is_empty() {
+                    log::warn!("AddProjectAgentTab: agent has no command_prefix; skipping");
+                } else {
+                    self.add_project_tagged_tab(
+                        project_path.clone(),
+                        TabKind::Agent,
+                        Some(cmd.to_string()),
+                        ctx,
+                    );
+                }
+            }
+            AddDefaultAgentTab { project_path } => {
+                self.add_default_agent_tab(project_path.clone(), ctx);
+            }
+            ToggleSoloProjectCollapsed { project_key } => {
+                let collapsed = &mut self.vertical_tabs_panel.collapsed_projects;
+                if !collapsed.remove(project_key) {
+                    collapsed.insert(project_key.clone());
+                }
+                ctx.notify();
+            }
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)
             }

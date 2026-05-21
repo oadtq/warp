@@ -348,6 +348,12 @@ pub struct Tab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    /// Solo-style: directory path this tab is bucketed under in the vertical
+    /// tabs sidebar. `None` → tab renders under the "Ungrouped" section.
+    pub project_path: Option<String>,
+    /// `"terminal"` or `"agent"` — drives Terminals vs. Agents sub-section on
+    /// restore. `None` is treated as `"terminal"` (graceful default).
+    pub tab_kind: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -356,6 +362,8 @@ pub struct NewTab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    pub project_path: Option<String>,
+    pub tab_kind: Option<String>,
 }
 
 /// The panes data model includes pane_nodes, pane_leaves and pane_branches.

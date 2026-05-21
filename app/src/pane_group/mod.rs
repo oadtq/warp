@@ -788,6 +788,12 @@ pub struct NewTerminalOptions {
     pub is_shared_session_creator: IsSharedSessionCreator,
     /// The AI conversation to restore when the terminal is created.
     pub conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+    /// Optional command to feed into the shell once it's ready. Used by the
+    /// Solo-style `+agent` flow to auto-launch a CLI agent (e.g. `claude`,
+    /// `codex`, `droid`) the moment the terminal opens. Equivalent to typing
+    /// the command and pressing Enter; gated by the same shell-ready signal
+    /// that drives tab-config startup commands.
+    pub startup_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -828,6 +834,13 @@ impl NewTerminalOptions {
     /// Returns new options with the homepage hidden.
     pub fn with_homepage_hidden(mut self) -> Self {
         self.hide_homepage = true;
+        self
+    }
+
+    /// Returns new options that auto-run `command` once the shell prints its
+    /// first prompt. Used by Solo-style `+agent` to launch CLI agents.
+    pub fn with_startup_command(mut self, command: impl Into<String>) -> Self {
+        self.startup_command = Some(command.into());
         self
     }
 }
@@ -3822,6 +3835,7 @@ impl PaneGroup {
         pane_history: &mut Vec<PaneId>,
         ctx: &mut ViewContext<Self>,
     ) -> (PaneData, InitialFocus) {
+        let startup_command = options.startup_command.clone();
         let (view, terminal_manager) = PaneGroup::create_session(
             options.initial_directory,
             options.env_vars,
@@ -3836,6 +3850,17 @@ impl PaneGroup {
             None,
             ctx,
         );
+
+        // Solo-style `+agent` / `+terminal` startup-command injection. Mirrors the
+        // already-proven `PaneTemplate` path further up this file (`commands.exec`
+        // → `set_pending_command_queue`) so the command is queued now and fed into
+        // the shell only after it prints its first prompt — no race conditions.
+        if let Some(cmd) = startup_command {
+            view.update(ctx, |terminal, ctx| {
+                terminal.set_pending_command_queue(vec![cmd], ctx);
+            });
+        }
+
         let uuid = Uuid::new_v4();
 
         let pane_data = TerminalPane::new(
