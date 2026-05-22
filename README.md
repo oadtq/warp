@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> This repository is a fork of [Warp](https://github.com/warpdotdev/warp) with experimental changes layered on top of the upstream client.
+>
+> This fork adds grouped project vertical tabs: terminals and agents are organized under project headers so multi-repository sessions are easier to scan. Project groups can be collapsed, each group separates terminal and agent subsections with counts, and each subsection includes a quick-add control that starts a new terminal or default CLI agent in that project's context. Ungrouped sessions remain available for work that is not tied to a specific project.
+
 <a href="https://www.warp.dev">
     <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
 </a>

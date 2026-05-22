@@ -496,8 +496,8 @@ use crate::tab::{
     tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor,
     TabBarState, TabComponent, TabData, TabKind, TabTelemetryAction, TAB_BAR_BORDER_HEIGHT,
 };
-use crate::terminal::CLIAgent;
 use crate::terminal::view::ssh_file_upload::FileUploadId;
+use crate::terminal::CLIAgent;
 use crate::ui_components::icons;
 use crate::TelemetryEvent;
 use autoupdate::AutoupdateStage;

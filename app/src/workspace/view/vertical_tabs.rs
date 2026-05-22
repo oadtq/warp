@@ -1294,12 +1294,12 @@ fn render_control_bar(
     control_row.add_child(new_tab_button);
 
     Container::new(control_row.finish())
-    .with_padding(
-        Padding::uniform(CONTROL_BAR_VERTICAL_PADDING)
-            .with_left(GROUP_HORIZONTAL_PADDING)
-            .with_right(GROUP_HORIZONTAL_PADDING),
-    )
-    .finish()
+        .with_padding(
+            Padding::uniform(CONTROL_BAR_VERTICAL_PADDING)
+                .with_left(GROUP_HORIZONTAL_PADDING)
+                .with_right(GROUP_HORIZONTAL_PADDING),
+        )
+        .finish()
 }
 
 fn render_detail_kind_badge_icon(
@@ -1366,18 +1366,15 @@ fn render_solo_add_project_button(
     let sub_text = theme.sub_text_color(theme.background());
     let ui_builder = appearance.ui_builder().clone();
     // Resolve the live "Add Project" chord (default Cmd+K) for the tooltip.
-    let add_project_keybinding =
-        keybinding_name_to_display_string("workspace:add_project", app);
+    let add_project_keybinding = keybinding_name_to_display_string("workspace:add_project", app);
 
     Hoverable::new(
         state.solo_add_project_button_state.clone(),
         move |hover_state| {
-            let icon = ConstrainedBox::new(
-                WarpIcon::Folder.to_warpui_icon(sub_text).finish(),
-            )
-            .with_width(16.)
-            .with_height(16.)
-            .finish();
+            let icon = ConstrainedBox::new(WarpIcon::Folder.to_warpui_icon(sub_text).finish())
+                .with_width(16.)
+                .with_height(16.)
+                .finish();
 
             let background = if hover_state.is_hovered() {
                 internal_colors::fg_overlay_2(theme)
@@ -1817,8 +1814,7 @@ fn render_groups(
             app,
         );
     } else {
-        for (visible_tab_index, (tab_index, filtered_pane_ids)) in visible_tabs.iter().enumerate()
-        {
+        for (visible_tab_index, (tab_index, filtered_pane_ids)) in visible_tabs.iter().enumerate() {
             // Insert ghost slot before this tab group if the drop would land here.
             if ghost_insertion_index == Some(*tab_index) {
                 groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
@@ -1927,10 +1923,7 @@ fn solo_project_header_key(project_path: Option<&Path>) -> String {
 /// Ensures a `SoloProjectHeaderState` exists for `key`, returning a clone of
 /// its handles. The `RefCell` borrow is dropped before the clone is returned,
 /// so the caller is free to hold the clone across other state mutations.
-fn solo_project_header_state(
-    state: &VerticalTabsPanelState,
-    key: &str,
-) -> SoloProjectHeaderState {
+fn solo_project_header_state(state: &VerticalTabsPanelState, key: &str) -> SoloProjectHeaderState {
     let mut map = state.solo_project_header_states.borrow_mut();
     map.entry(key.to_string()).or_default().clone()
 }
@@ -2130,12 +2123,10 @@ fn render_solo_project_header(
     .with_height(12.)
     .finish();
 
-    let folder = ConstrainedBox::new(
-        WarpIcon::Folder.to_warpui_icon(icon_color).finish(),
-    )
-    .with_width(13.)
-    .with_height(13.)
-    .finish();
+    let folder = ConstrainedBox::new(WarpIcon::Folder.to_warpui_icon(icon_color).finish())
+        .with_width(13.)
+        .with_height(13.)
+        .finish();
 
     // `MainAxisSize::Max` so the row — and the band that wraps it — spans the
     // full sidebar width.
