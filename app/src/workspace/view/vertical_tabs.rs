@@ -1593,12 +1593,11 @@ fn render_vertical_tabs_panel(
     let scrollable_groups = ClippedScrollable::vertical(
         state.scroll_state.clone(),
         render_groups(state, workspace, app),
-        ScrollbarWidth::Custom(4.),
+        ScrollbarWidth::None,
         theme.nonactive_ui_detail().into(),
         theme.active_ui_detail().into(),
         ElementFill::None,
     )
-    .with_overlayed_scrollbar()
     .finish();
 
     let panel_content = Flex::column()
@@ -2051,53 +2050,86 @@ fn solo_render_one_project(
     is_any_pane_dragging: bool,
     app: &AppContext,
 ) {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
     let key = solo_project_header_key(project_path);
     let collapsed = state.collapsed_projects.contains(&key);
-    groups.add_child(render_solo_project_header(project_path, collapsed, app));
+
+    // Build all project content in an inner column.
+    let mut project_content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+
+    project_content.add_child(render_solo_project_header(project_path, collapsed, app));
 
     // Collapsed → render only the header, hiding all sections + tabs.
-    if collapsed {
-        return;
-    }
-
-    let tabs_of_kind = |kind: TabKind| -> Vec<(usize, Option<Vec<PaneId>>)> {
-        tabs.iter()
-            .filter(|(tab_index, _)| workspace.tabs[*tab_index].kind == kind)
-            .cloned()
-            .collect()
-    };
-    // Solo order: Agents above Processes above Terminals.
-    for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
-        let kind_tabs = tabs_of_kind(kind);
-        let subsection_key = format!("{key}:{kind:?}");
-        let subsection_collapsed = state.collapsed_subsections.contains(&subsection_key);
-        groups.add_child(render_solo_subsection_label(
-            kind,
-            kind_tabs.len(),
-            subsection_collapsed,
-            project_path,
-            state,
-            app,
-        ));
-        if subsection_collapsed {
-            continue;
-        }
-        for (tab_index, filtered_pane_ids) in &kind_tabs {
-            groups.add_child(render_tab_group(
+    if !collapsed {
+        let tabs_of_kind = |kind: TabKind| -> Vec<(usize, Option<Vec<PaneId>>)> {
+            tabs.iter()
+                .filter(|(tab_index, _)| workspace.tabs[*tab_index].kind == kind)
+                .cloned()
+                .collect()
+        };
+        // Solo order: Agents above Processes above Terminals.
+        for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+            let kind_tabs = tabs_of_kind(kind);
+            let subsection_key = format!("{key}:{kind:?}");
+            let subsection_collapsed = state.collapsed_subsections.contains(&subsection_key);
+            project_content.add_child(render_solo_subsection_label(
+                kind,
+                kind_tabs.len(),
+                subsection_collapsed,
+                project_path,
                 state,
-                workspace,
-                *tab_index,
-                &workspace.tabs[*tab_index],
-                filtered_pane_ids.as_deref(),
-                TabGroupDragState {
-                    is_any_pane_dragging,
-                    insert_before_index: *tab_index,
-                    insert_after_index: None,
-                },
                 app,
             ));
+            if subsection_collapsed {
+                continue;
+            }
+            for (tab_index, filtered_pane_ids) in &kind_tabs {
+                project_content.add_child(render_tab_group(
+                    state,
+                    workspace,
+                    *tab_index,
+                    &workspace.tabs[*tab_index],
+                    filtered_pane_ids.as_deref(),
+                    TabGroupDragState {
+                        is_any_pane_dragging,
+                        insert_before_index: *tab_index,
+                        insert_after_index: None,
+                    },
+                    app,
+                ));
+            }
         }
     }
+
+    // Brave-style vertical grouping: a 3px left border on the entire project
+    // block. The border naturally spans the full height of the header + all
+    // subsections + tabs, creating a continuous visual thread without needing
+    // a separate stretching element or heavy horizontal hairlines.
+    // Bottom hairline separates this project from the next one.
+    // with_sides(top, left, bottom, right) — left + bottom borders.
+    let project_group = Container::new(project_content.finish())
+        .with_border(
+            Border::new(3.)
+                .with_sides(false, true, false, false)
+                .with_border_fill(internal_colors::fg_overlay_6(theme)),
+        )
+        .with_border(
+            Border::new(1.)
+                .with_sides(false, false, true, false)
+                .with_border_fill(internal_colors::fg_overlay_2(theme)),
+        )
+        .with_padding(
+            Padding::uniform(0.)
+                .with_left(4.)
+                .with_right(GROUP_HORIZONTAL_PADDING)
+                .with_bottom(6.),
+        )
+        .finish();
+
+    groups.add_child(project_group);
 }
 
 /// Renders a project header row: a full-bleed band (Solo-style) — a filled
@@ -2123,30 +2155,21 @@ fn render_solo_project_header(
     };
     let key = solo_project_header_key(project_path);
 
-    // Collapse / expand chevron.
-    let chevron = ConstrainedBox::new(
-        if collapsed {
-            WarpIcon::ChevronRight
-        } else {
-            WarpIcon::ChevronDown
-        }
-        .to_warpui_icon(icon_color)
-        .finish(),
-    )
-    .with_width(12.)
-    .with_height(12.)
-    .finish();
-
-    let folder = ConstrainedBox::new(WarpIcon::Folder.to_warpui_icon(icon_color).finish())
-        .with_width(13.)
-        .with_height(13.)
+    // Single folder icon that changes to indicate open/closed state.
+    let folder_icon = if collapsed {
+        WarpIcon::FolderClosed
+    } else {
+        WarpIcon::Folder
+    };
+    let folder = ConstrainedBox::new(folder_icon.to_warpui_icon(icon_color).finish())
+        .with_width(14.)
+        .with_height(14.)
         .finish();
 
     let mut content = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.);
-    content.add_child(chevron);
+        .with_spacing(8.);
     content.add_child(folder);
     content.add_child(
         Text::new_inline(label, appearance.ui_font_family(), 12.)
