@@ -975,6 +975,7 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                     tab_kind: tab.kind.map(|k| match k {
                         crate::tab::TabKind::Terminal => "terminal".to_string(),
                         crate::tab::TabKind::Agent => "agent".to_string(),
+                        crate::tab::TabKind::Process => "process".to_string(),
                     }),
                 })
                 .collect();
@@ -2796,6 +2797,7 @@ fn read_sqlite_data(
                         kind: tab.tab_kind.as_deref().and_then(|k| match k {
                             "terminal" => Some(crate::tab::TabKind::Terminal),
                             "agent" => Some(crate::tab::TabKind::Agent),
+                            "process" => Some(crate::tab::TabKind::Process),
                             _ => None,
                         }),
                     })

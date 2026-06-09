@@ -21378,6 +21378,14 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
+            AddProjectProcessTab { project_path } => {
+                self.add_project_tagged_tab(
+                    project_path.clone(),
+                    TabKind::Process,
+                    None,
+                    ctx,
+                );
+            }
             AddDefaultAgentTab { project_path } => {
                 self.add_default_agent_tab(project_path.clone(), ctx);
             }
@@ -21385,6 +21393,14 @@ impl TypedActionView for Workspace {
                 let collapsed = &mut self.vertical_tabs_panel.collapsed_projects;
                 if !collapsed.remove(project_key) {
                     collapsed.insert(project_key.clone());
+                }
+                ctx.notify();
+            }
+            ToggleSoloSubsectionCollapsed { project_key, kind } => {
+                let collapsed = &mut self.vertical_tabs_panel.collapsed_subsections;
+                let key = format!("{project_key}:{kind:?}");
+                if !collapsed.remove(&key) {
+                    collapsed.insert(key);
                 }
                 ctx.notify();
             }

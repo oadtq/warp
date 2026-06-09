@@ -578,9 +578,14 @@ pub(super) struct VerticalTabsPanelState {
     /// Solo-style: mouse state for the "Add Project" button in the control bar.
     solo_add_project_button_state: MouseStateHandle,
     /// Solo-style: keys of project groups the user has collapsed (hiding their
-    /// Agents / Terminals sections). Keyed like `solo_project_header_key`.
+    /// Agents / Terminals / Processes sections). Keyed like `solo_project_header_key`.
     /// In-memory only — collapse state resets on restart.
     pub(super) collapsed_projects: std::collections::HashSet<String>,
+    /// Solo-style: keys of subsections the user has collapsed inside a project
+    /// group. Key is `"<project_key>:<kind>"` where `<kind>` is the `TabKind`
+    /// debug representation (e.g. `Terminal`, `Agent`, `Process`).
+    /// In-memory only — collapse state resets on restart.
+    pub(super) collapsed_subsections: std::collections::HashSet<String>,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
     panes_segment_mouse_state: MouseStateHandle,
@@ -619,6 +624,7 @@ impl Default for VerticalTabsPanelState {
             solo_project_header_states: RefCell::default(),
             solo_add_project_button_state: Default::default(),
             collapsed_projects: std::collections::HashSet::new(),
+            collapsed_subsections: std::collections::HashSet::new(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
             panes_segment_mouse_state: Default::default(),
@@ -1911,6 +1917,7 @@ const SOLO_UNGROUPED_KEY: &str = "__solo_ungrouped__";
 struct SoloProjectHeaderState {
     new_terminal_button: MouseStateHandle,
     new_agent_button: MouseStateHandle,
+    new_process_button: MouseStateHandle,
 }
 
 fn solo_project_header_key(project_path: Option<&Path>) -> String {
@@ -2031,9 +2038,10 @@ fn solo_render_project_groups(
     }
 }
 
-/// Renders a single project block: header + Agents section + Terminals
-/// section. `project_path = None` renders the "Ungrouped" block (no add
-/// buttons — a tab can't be tagged with a non-existent project).
+/// Renders a single project block: header + Agents section + Processes
+/// section + Terminals section. `project_path = None` renders the "Ungrouped"
+/// block (no add buttons — a tab can't be tagged with a non-existent
+/// project).
 fn solo_render_one_project(
     groups: &mut Flex,
     project_path: Option<&Path>,
@@ -2058,16 +2066,22 @@ fn solo_render_one_project(
             .cloned()
             .collect()
     };
-    // Solo order: Agents above Terminals.
-    for kind in [TabKind::Agent, TabKind::Terminal] {
+    // Solo order: Agents above Processes above Terminals.
+    for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
         let kind_tabs = tabs_of_kind(kind);
+        let subsection_key = format!("{key}:{kind:?}");
+        let subsection_collapsed = state.collapsed_subsections.contains(&subsection_key);
         groups.add_child(render_solo_subsection_label(
             kind,
             kind_tabs.len(),
+            subsection_collapsed,
             project_path,
             state,
             app,
         ));
+        if subsection_collapsed {
+            continue;
+        }
         for (tab_index, filtered_pane_ids) in &kind_tabs {
             groups.add_child(render_tab_group(
                 state,
@@ -2128,8 +2142,6 @@ fn render_solo_project_header(
         .with_height(13.)
         .finish();
 
-    // `MainAxisSize::Max` so the row — and the band that wraps it — spans the
-    // full sidebar width.
     let mut content = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2143,16 +2155,10 @@ fn render_solo_project_header(
             .finish(),
     );
 
-    // Full-bleed band: faint filled background + soft top/bottom hairlines only
-    // (no side borders, no corner radius) — the Solo-style section-divider look,
-    // kept deliberately low-prominence so it reads as a container, not a button.
-    let band = Container::new(content.finish())
-        .with_background(internal_colors::fg_overlay_1(theme))
-        .with_border(
-            Border::new(1.)
-                .with_sides(true, false, true, false)
-                .with_border_fill(internal_colors::fg_overlay_2(theme)),
-        )
+    // Clean header with no background band or hairlines. The group identity
+    // is conveyed by the 2px vertical bar rendered alongside the entire project
+    // block in `solo_render_one_project`.
+    let header = Container::new(content.finish())
         .with_padding(
             Padding::uniform(7.)
                 .with_left(GROUP_HORIZONTAL_PADDING)
@@ -2160,7 +2166,7 @@ fn render_solo_project_header(
         )
         .finish();
 
-    let spaced = Container::new(band)
+    let spaced = Container::new(header)
         .with_padding(Padding::uniform(0.).with_top(10.).with_bottom(2.))
         .finish();
 
@@ -2187,13 +2193,15 @@ fn solo_default_agent(app: &AppContext) -> CLIAgent {
     }
 }
 
-/// Renders an "AGENTS" / "TERMINALS" sub-section header row: label + count on
-/// the left, a `+` add button on the right. The `+` button is rendered for
-/// every section — including "Ungrouped" — so a terminal / agent can be
-/// created from anywhere (`project_path = None` → an ungrouped tab).
+/// Renders an "AGENTS" / "PROCESSES" / "TERMINALS" sub-section header row:
+/// chevron + label + count on the left, a `+` add button on the right.
+/// The `+` button is rendered for every section — including "Ungrouped" — so
+/// a terminal / agent / process can be created from anywhere (`project_path =
+/// None` → an ungrouped tab). Clicking the label row toggles collapse.
 fn render_solo_subsection_label(
     kind: TabKind,
     count: usize,
+    collapsed: bool,
     project_path: Option<&Path>,
     state: &VerticalTabsPanelState,
     app: &AppContext,
@@ -2205,6 +2213,7 @@ fn render_solo_subsection_label(
     let label = match kind {
         TabKind::Terminal => "TERMINALS",
         TabKind::Agent => "AGENTS",
+        TabKind::Process => "PROCESSES",
     };
     let label_text = if count > 0 {
         format!("{label}  {count}")
@@ -2212,15 +2221,36 @@ fn render_solo_subsection_label(
         label.to_string()
     };
 
-    let mut row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center);
-    row.add_child(
+    // Collapse / expand chevron.
+    let chevron = ConstrainedBox::new(
+        if collapsed {
+            WarpIcon::ChevronRight
+        } else {
+            WarpIcon::ChevronDown
+        }
+        .to_warpui_icon(sub_text)
+        .finish(),
+    )
+    .with_width(10.)
+    .with_height(10.)
+    .finish();
+
+    let mut label_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.);
+    label_row.add_child(chevron);
+    label_row.add_child(
         Text::new_inline(label_text, appearance.ui_font_family(), 10.)
             .with_color(sub_text.into())
             .finish(),
     );
+
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    row.add_child(label_row.finish());
 
     // `+` add button — present for every section, including Ungrouped.
     let key = solo_project_header_key(project_path);
@@ -2238,6 +2268,12 @@ fn render_solo_subsection_label(
             WorkspaceAction::AddProjectAgentTab {
                 project_path: owned_path,
                 agent: solo_default_agent(app),
+            },
+        ),
+        TabKind::Process => (
+            header_state.new_process_button.clone(),
+            WorkspaceAction::AddProjectProcessTab {
+                project_path: owned_path,
             },
         ),
     };
@@ -2262,12 +2298,24 @@ fn render_solo_subsection_label(
         .finish();
     row.add_child(add_button);
 
-    Container::new(row.finish())
+    let container = Container::new(row.finish())
         .with_padding(
             Padding::uniform(2.)
                 .with_horizontal(GROUP_HORIZONTAL_PADDING + 4.)
                 .with_top(4.),
         )
+        .finish();
+
+    // Clicking the label row toggles collapse / expand for this subsection.
+    let toggle_key = key.clone();
+    EventHandler::new(container)
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloSubsectionCollapsed {
+                project_key: toggle_key.clone(),
+                kind,
+            });
+            DispatchEventResult::StopPropagation
+        })
         .finish()
 }
 
