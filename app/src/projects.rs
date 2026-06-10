@@ -75,6 +75,21 @@ impl ProjectManagementModel {
         self.projects.values()
     }
 
+    /// Remove a project from the list and the database.
+    pub fn remove_project(&mut self, path: &PathBuf, ctx: &mut ModelContext<Self>) {
+        if self.projects.remove(path).is_some() {
+            if let Some(sender) = &self.model_event_sender {
+                let event = ModelEvent::DeleteProject {
+                    path: path.to_string_lossy().to_string(),
+                };
+                if let Err(err) = sender.send(event) {
+                    log::error!("Failed to delete project from database: {err}");
+                }
+            }
+            ctx.emit(ProjectEvent::Removed { path: path.clone() });
+        }
+    }
+
     /// Save a project to the database
     fn save_project(&self, project: Project) {
         if let Some(sender) = &self.model_event_sender {

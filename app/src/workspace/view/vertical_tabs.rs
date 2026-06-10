@@ -2194,14 +2194,27 @@ fn render_solo_project_header(
         .finish();
 
     // Clicking the header row toggles collapse / expand for this project.
-    EventHandler::new(spaced)
+    let mut handler = EventHandler::new(spaced)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
                 project_key: key.clone(),
             });
             DispatchEventResult::StopPropagation
-        })
-        .finish()
+        });
+
+    // Right-click on a real project header opens a context menu.
+    if let Some(path) = project_path {
+        let path = path.to_path_buf();
+        handler = handler.on_right_mouse_down(move |ctx, _, position| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleProjectHeaderContextMenu {
+                project_path: path.clone(),
+                position,
+            });
+            DispatchEventResult::StopPropagation
+        });
+    }
+
+    handler.finish()
 }
 
 /// Resolves the user's default CLI agent from the `agents.default_cli_agent`

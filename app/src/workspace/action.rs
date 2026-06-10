@@ -168,6 +168,11 @@ pub enum WorkspaceAction {
     /// upsert into the `projects` table). Does NOT auto-open a tab — matches
     /// Solo's "add project, then add terminals/agents into it" UX.
     AddProject,
+    /// Remove a project from the sidebar. Open tabs tagged with this project
+    /// are re-bucketed into the "Ungrouped" section.
+    RemoveProject {
+        path: PathBuf,
+    },
     /// Open a new terminal tab tagged with `TabKind::Terminal`. When
     /// `project_path` is `Some`, the shell opens in that directory and the tab
     /// renders under that project's Terminals section; `None` opens an
@@ -201,6 +206,13 @@ pub enum WorkspaceAction {
     /// sentinel). Pure in-memory UI state — not persisted across restarts.
     ToggleSoloProjectCollapsed {
         project_key: String,
+    },
+    /// Open a context menu on a project header in the vertical-tabs sidebar.
+    /// `project_path` is the project's directory path; `position` is the
+    /// pointer location used to anchor the menu.
+    ToggleProjectHeaderContextMenu {
+        project_path: PathBuf,
+        position: Vector2F,
     },
     /// Collapse / expand a Solo-style subsection (Agents / Terminals /
     /// Processes) inside a project group. `project_key` is the project path
@@ -829,6 +841,7 @@ impl WorkspaceAction {
             | AddAmbientAgentTab
             | AddDockerSandboxTab
             | AddProject
+            | RemoveProject { .. }
             | AddProjectTerminalTab { .. }
             | AddProjectAgentTab { .. }
             | AddProjectProcessTab { .. }
@@ -887,6 +900,7 @@ impl WorkspaceAction {
             | OpenLaunchConfigSaveModal
             | ToggleTabRightClickMenu { .. }
             | ToggleVerticalTabsPaneContextMenu { .. }
+            | ToggleProjectHeaderContextMenu { .. }
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu
             | ToggleNewSessionMenu { .. }
