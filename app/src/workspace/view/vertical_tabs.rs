@@ -123,6 +123,10 @@ const VERTICAL_TABS_ICON_SIZE: f32 = 24.;
 /// `STATUS_ELEMENT_PADDING` (2px) for an overall ~14px element next to a 12pt title.
 const VERTICAL_TABS_SUMMARY_STATUS_ICON_SIZE: f32 = 10.;
 
+/// Icon size for the standalone status indicator in Condensed mode. Kept small so the
+/// row stays a single, dense line while still conveying agent task status.
+const CONDENSED_STATUS_ICON_SIZE: f32 = 8.;
+
 fn vtab_pane_row_position_id(pane_group_id: EntityId, pane_id: PaneId) -> String {
     format!("vertical_tabs:pane_row:{pane_group_id:?}:{pane_id}")
 }
@@ -593,6 +597,7 @@ pub(super) struct VerticalTabsPanelState {
     focused_session_option_mouse_state: MouseStateHandle,
     summary_option_mouse_state: MouseStateHandle,
     compact_segment_mouse_state: MouseStateHandle,
+    condensed_segment_mouse_state: MouseStateHandle,
     expanded_segment_mouse_state: MouseStateHandle,
     command_option_mouse_state: MouseStateHandle,
     directory_option_mouse_state: MouseStateHandle,
@@ -632,6 +637,7 @@ impl Default for VerticalTabsPanelState {
             focused_session_option_mouse_state: Default::default(),
             summary_option_mouse_state: Default::default(),
             compact_segment_mouse_state: Default::default(),
+            condensed_segment_mouse_state: Default::default(),
             expanded_segment_mouse_state: Default::default(),
             command_option_mouse_state: Default::default(),
             directory_option_mouse_state: Default::default(),
@@ -2556,6 +2562,7 @@ fn render_tab_group_internal(
                 let view_mode = *TabSettings::as_ref(app).vertical_tabs_view_mode.value();
                 let row = match view_mode {
                     VerticalTabsViewMode::Compact => render_compact_pane_row(pane_props, app),
+                    VerticalTabsViewMode::Condensed => render_condensed_pane_row(pane_props, app),
                     VerticalTabsViewMode::Expanded => render_pane_row(pane_props, app),
                 };
                 rows.add_child(row);
@@ -5318,8 +5325,7 @@ pub(super) fn render_settings_popup(
     .with_margin_bottom(4.)
     .finish();
 
-    // Segmented control row (compact/expanded toggle)
-    // Segmented control row (compact/expanded toggle) — always at the top
+    // Segmented control row (compact/condensed/expanded toggle)
     let segmented_control = Container::new(
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
@@ -5332,6 +5338,20 @@ pub(super) fn render_settings_popup(
                         matches!(current_mode, VerticalTabsViewMode::Compact),
                         state.compact_segment_mouse_state.clone(),
                         VerticalTabsViewMode::Compact,
+                        theme,
+                        sub_text,
+                    ),
+                )
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    render_popup_segment(
+                        WarpIcon::DistributeSpacingVertical,
+                        matches!(current_mode, VerticalTabsViewMode::Condensed),
+                        state.condensed_segment_mouse_state.clone(),
+                        VerticalTabsViewMode::Condensed,
                         theme,
                         sub_text,
                     ),
@@ -6642,6 +6662,92 @@ pub(super) fn render_detail_sidecar(
         child_anchor,
         sidecar: ConstrainedBox::new(sidecar).with_width(width).finish(),
     })
+}
+
+/// Renders the densest vertical-tabs row: a single line containing an optional
+/// agent status indicator and the pane title. No icon, no subtitle, minimal padding.
+fn render_condensed_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let main_text_color = theme.main_text_color(theme.background());
+    let has_indicator = props.typed.badge(app).is_some() || has_unread_activity(&props.typed, app);
+
+    let (status, title_element) = if let TypedPane::Terminal(terminal_pane) = &props.typed {
+        let terminal_view = terminal_pane.terminal_view(app).as_ref(app);
+        let status = summary_conversation_status_for_terminal(terminal_view, app);
+        let title = render_pane_title_slot(
+            &props,
+            || {
+                render_terminal_primary_line_for_view(
+                    terminal_view,
+                    appearance,
+                    main_text_color,
+                    app,
+                )
+            },
+            12.,
+            main_text_color,
+            ClipConfig::ellipsis(),
+            appearance,
+            app,
+        );
+        (status, title)
+    } else {
+        let title = render_pane_title_slot(
+            &props,
+            || render_compact_non_terminal_title(props.displayed_title(), &props.typed, appearance),
+            12.,
+            main_text_color,
+            if matches!(props.typed, TypedPane::Code(_)) {
+                ClipConfig::start()
+            } else {
+                ClipConfig::ellipsis()
+            },
+            appearance,
+            app,
+        );
+        (None, title)
+    };
+
+    // Title row with optional notification indicator pushed to the far right.
+    let title_row = if has_indicator {
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., title_element).finish())
+            .with_child(
+                Container::new(render_title_indicator(theme))
+                    .with_margin_left(4.)
+                    .finish(),
+            )
+            .finish()
+    } else {
+        title_element
+    };
+
+    let mut content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.);
+
+    if let Some(status) = status {
+        content.add_child(render_status_element(
+            &status,
+            CONDENSED_STATUS_ICON_SIZE,
+            appearance,
+        ));
+    }
+
+    content.add_child(Shrinkable::new(1., title_row).finish());
+
+    render_pane_row_element(
+        props,
+        Padding::uniform(4.).with_left(8.).with_right(8.),
+        true,
+        content.finish(),
+        theme,
+    )
 }
 
 fn render_compact_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {

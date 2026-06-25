@@ -303,6 +303,7 @@ settings::macros::implement_setting_for_enum!(
 pub enum VerticalTabsViewMode {
     #[default]
     Compact,
+    Condensed,
     Expanded,
 }
 
