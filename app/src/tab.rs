@@ -134,6 +134,7 @@ pub enum TabKind {
     #[default]
     Terminal,
     Agent,
+    Process,
 }
 
 /// TabData struct holds the state of the given tab. It includes the pane group and mouse states

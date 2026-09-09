@@ -850,6 +850,7 @@ type RemoteUploadId = (TerminalPaneId, FileUploadId);
 type WorkspaceMenuHandles = (
     ViewHandle<Menu<WorkspaceAction>>,
     ViewHandle<Menu<WorkspaceAction>>,
+    ViewHandle<Menu<WorkspaceAction>>,
     ViewHandle<Menu<NewSessionSidecarSelection>>,
 );
 
@@ -997,6 +998,8 @@ pub struct Workspace {
     show_tab_bar_overflow_menu: bool,
     tab_right_click_menu: ViewHandle<Menu<WorkspaceAction>>,
     show_tab_right_click_menu: Option<(usize, TabContextMenuAnchor)>,
+    project_header_context_menu: ViewHandle<Menu<WorkspaceAction>>,
+    show_project_header_context_menu: Option<(PathBuf, Vector2F)>,
     // TODO(CORE-2300): this used to be add_tab_dropdown_menu.
     // Because we are rolling out the change behind a feature flag,
     // keep this comment here until the feature flag is removed.
@@ -1856,6 +1859,21 @@ impl Workspace {
             me.handle_tab_right_click_menu_event(event, ctx);
         });
 
+        const PROJECT_HEADER_MENU_WIDTH: f32 = 180.;
+        let project_header_context_menu = ctx.add_typed_action_view(|ctx| {
+            let theme = Appearance::as_ref(ctx).theme();
+            Menu::new()
+                .with_width(PROJECT_HEADER_MENU_WIDTH)
+                .with_border(Border::all(1.).with_border_color(theme.outline().into()))
+                .with_drop_shadow()
+                .with_safe_triangle()
+                .with_ignore_hover_when_covered()
+                .prevent_interaction_with_other_elements()
+        });
+        ctx.subscribe_to_view(&project_header_context_menu, move |me, _, event, ctx| {
+            me.handle_project_header_context_menu_event(event, ctx);
+        });
+
         // Currently setting the width to 300 px as a middle ground that looks
         // ok when the shells show the path to the executables, and when they
         // don't. Going forward we may want to enhance the menu to allow for a
@@ -1894,7 +1912,12 @@ impl Workspace {
             me.handle_new_session_sidecar_event(event, ctx);
         });
 
-        (tab_right_click_menu, new_session_menu, new_session_sidecar)
+        (
+            tab_right_click_menu,
+            project_header_context_menu,
+            new_session_menu,
+            new_session_sidecar,
+        )
     }
 
     fn build_launch_config_save_modal(
@@ -2651,8 +2674,12 @@ impl Workspace {
         terminal::platform::init().expect("Terminal platform initialized");
 
         let tab_bar_overflow_menu = Self::build_tab_bar_overflow_menu(ctx);
-        let (tab_right_click_menu, new_session_dropdown_menu, new_session_sidecar_menu) =
-            Self::build_menus(ctx);
+        let (
+            tab_right_click_menu,
+            project_header_context_menu,
+            new_session_dropdown_menu,
+            new_session_sidecar_menu,
+        ) = Self::build_menus(ctx);
 
         // Subscribe to network changes
         ctx.subscribe_to_model(
@@ -3140,6 +3167,8 @@ impl Workspace {
             show_tab_bar_overflow_menu: false,
             tab_right_click_menu,
             show_tab_right_click_menu: None,
+            project_header_context_menu,
+            show_project_header_context_menu: None,
             new_session_dropdown_menu,
             show_new_session_dropdown_menu: None,
             changelog_model,
@@ -6735,6 +6764,35 @@ impl Workspace {
         ctx.notify();
     }
 
+    pub fn toggle_project_header_context_menu(
+        &mut self,
+        project_path: PathBuf,
+        position: Vector2F,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.show_project_header_context_menu.is_some() {
+            self.show_project_header_context_menu = None;
+            ctx.notify();
+            return;
+        }
+
+        let menu_items = vec![MenuItemFields::new("Remove project")
+            .with_on_select_action(WorkspaceAction::RemoveProject {
+                path: project_path.clone(),
+            })
+            .into_item()];
+
+        ctx.update_view(
+            &self.project_header_context_menu,
+            |context_menu, view_ctx| {
+                context_menu.set_items(menu_items, view_ctx);
+            },
+        );
+        self.show_project_header_context_menu = Some((project_path, position));
+        ctx.focus(&self.project_header_context_menu);
+        ctx.notify();
+    }
+
     /// The tab bar overflow menu is the context menu that appears when
     /// a user clicks "Update Warp" in the top right of the tab bar.
     pub fn toggle_tab_bar_overflow_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -8706,6 +8764,17 @@ impl Workspace {
         }
     }
 
+    fn handle_project_header_context_menu_event(
+        &mut self,
+        event: &MenuEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let MenuEvent::Close { via_select_item: _ } = event {
+            self.show_project_header_context_menu = None;
+            ctx.notify();
+        }
+    }
+
     fn handle_new_session_menu_event(&mut self, event: &MenuEvent, ctx: &mut ViewContext<Self>) {
         match event {
             MenuEvent::Close { .. } => {
@@ -10316,50 +10385,101 @@ impl Workspace {
     }
 
     pub fn activate_prev_tab(&mut self, ctx: &mut ViewContext<Self>) {
-        let index = if self.vertical_tabs_panel.search_query.is_empty() {
-            if self.active_tab_index > 0 {
-                self.active_tab_index - 1
-            } else {
-                self.tabs.len() - 1
-            }
-        } else {
-            let matching = self.vertical_tabs_panel.matching_tab_indices(
-                &self.tabs,
-                self.active_tab_index,
-                ctx,
-            );
-            matching
-                .iter()
-                .rev()
-                .find(|&&i| i < self.active_tab_index)
-                .or_else(|| matching.last())
-                .copied()
-                .unwrap_or(self.active_tab_index)
-        };
+        let order = self.visual_tab_order(ctx);
+        let index = order
+            .iter()
+            .position(|&i| i == self.active_tab_index)
+            .and_then(|position| {
+                if order.is_empty() {
+                    None
+                } else if position > 0 {
+                    order.get(position - 1).copied()
+                } else {
+                    order.last().copied()
+                }
+            })
+            .unwrap_or(self.active_tab_index);
         self.activate_tab(index, ctx);
     }
 
     pub fn activate_next_tab(&mut self, ctx: &mut ViewContext<Self>) {
-        let index = if self.vertical_tabs_panel.search_query.is_empty() {
-            if self.active_tab_index + 1 < self.tabs.len() {
-                self.active_tab_index + 1
-            } else {
-                0
-            }
-        } else {
-            let matching = self.vertical_tabs_panel.matching_tab_indices(
-                &self.tabs,
-                self.active_tab_index,
-                ctx,
-            );
-            matching
-                .iter()
-                .find(|&&i| i > self.active_tab_index)
-                .or_else(|| matching.first())
-                .copied()
-                .unwrap_or(self.active_tab_index)
-        };
+        let order = self.visual_tab_order(ctx);
+        let index = order
+            .iter()
+            .position(|&i| i == self.active_tab_index)
+            .and_then(|position| order.get((position + 1) % order.len()).copied())
+            .unwrap_or(self.active_tab_index);
         self.activate_tab(index, ctx);
+    }
+
+    fn visual_tab_order(&self, ctx: &AppContext) -> Vec<usize> {
+        let mut indices = if self.vertical_tabs_panel.search_query.is_empty() {
+            (0..self.tabs.len()).collect()
+        } else {
+            self.vertical_tabs_panel
+                .matching_tab_indices(&self.tabs, self.active_tab_index, ctx)
+        };
+
+        if !(FeatureFlag::ProjectGroupedTabs.is_enabled()
+            && *TabSettings::as_ref(ctx).use_project_grouping)
+        {
+            return indices;
+        }
+
+        let index_set: std::collections::HashSet<usize> = indices.drain(..).collect();
+        let mut ordered = Vec::new();
+        let project_order = self.project_group_order(ctx);
+        for project_path in &project_order {
+            for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+                ordered.extend(self.tabs.iter().enumerate().filter_map(|(index, tab)| {
+                    (index_set.contains(&index)
+                        && tab.project_path.as_ref() == Some(project_path)
+                        && tab.kind == kind)
+                        .then_some(index)
+                }));
+            }
+        }
+        for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+            ordered.extend(self.tabs.iter().enumerate().filter_map(|(index, tab)| {
+                (index_set.contains(&index)
+                    && (tab.project_path.is_none()
+                        || tab
+                            .project_path
+                            .as_ref()
+                            .is_some_and(|path| !project_order.contains(path)))
+                    && tab.kind == kind)
+                    .then_some(index)
+            }));
+        }
+        ordered
+    }
+
+    fn project_group_order(&self, ctx: &AppContext) -> Vec<PathBuf> {
+        let mut projects: Vec<(PathBuf, chrono::NaiveDateTime)> =
+            ProjectManagementModel::handle(ctx)
+                .as_ref(ctx)
+                .all_projects()
+                .map(|p| (PathBuf::from(&p.path), p.added_ts))
+                .collect();
+        projects.sort_by(|a, b| a.1.cmp(&b.1));
+        projects.into_iter().map(|(path, _)| path).collect()
+    }
+
+    pub fn activate_project_by_number(&mut self, number: usize, ctx: &mut ViewContext<Self>) {
+        let Some(project_path) = self
+            .project_group_order(ctx)
+            .get(number.saturating_sub(1))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(index) = self.visual_tab_order(ctx).into_iter().find(|&index| {
+            self.tabs
+                .get(index)
+                .is_some_and(|tab| tab.project_path.as_ref() == Some(&project_path))
+        }) {
+            self.activate_tab(index, ctx);
+        }
     }
 
     pub fn activate_last_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -21251,6 +21371,7 @@ impl TypedActionView for Workspace {
         match action {
             ActivateTab(index) => self.activate_tab(*index, ctx),
             ActivateTabByNumber(num) => self.activate_tab(num.saturating_sub(1), ctx),
+            ActivateProjectByNumber(num) => self.activate_project_by_number(*num, ctx),
             ActivatePrevTab => self.activate_prev_tab(ctx),
             OpenLaunchConfigSaveModal => self.open_launch_config_save_modal(ctx),
             ActivateNextTab => self.activate_next_tab(ctx),
@@ -21288,6 +21409,10 @@ impl TypedActionView for Workspace {
                 target,
                 position,
             } => self.toggle_vertical_tabs_pane_context_menu(*tab_index, *target, *position, ctx),
+            ToggleProjectHeaderContextMenu {
+                project_path,
+                position,
+            } => self.toggle_project_header_context_menu(project_path.clone(), *position, ctx),
             ToggleTabBarOverflowMenu => self.toggle_tab_bar_overflow_menu(ctx),
             ToggleBlockSnackbar => self.toggle_block_snackbar(ctx),
             ToggleWelcomeTips => self.toggle_welcome_tips_visiblity(ctx),
@@ -21330,7 +21455,19 @@ impl TypedActionView for Workspace {
                     // Terminal and Agent are handled by the existing path
                     // (add_terminal_tab applies DefaultSessionMode::Agent internally).
                     DefaultSessionMode::Terminal | DefaultSessionMode::Agent => {
-                        if FeatureFlag::WelcomeTab.is_enabled() {
+                        if FeatureFlag::ProjectGroupedTabs.is_enabled()
+                            && *TabSettings::as_ref(ctx).use_project_grouping
+                            && matches!(effective_mode, DefaultSessionMode::Terminal)
+                            && self
+                                .tabs
+                                .get(self.active_tab_index)
+                                .and_then(|tab| tab.project_path.clone())
+                                .is_some()
+                        {
+                            let project_path =
+                                self.tabs[self.active_tab_index].project_path.clone();
+                            self.add_project_tagged_tab(project_path, TabKind::Terminal, None, ctx);
+                        } else if FeatureFlag::WelcomeTab.is_enabled() {
                             self.add_welcome_tab(ctx);
                         } else {
                             self.add_terminal_tab(false, ctx);
@@ -21359,6 +21496,11 @@ impl TypedActionView for Workspace {
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             // === Solo-style project-grouped tab actions ===
             AddProject => self.add_project_via_picker(ctx),
+            RemoveProject { path } => {
+                ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+                    projects.remove_project(path, ctx);
+                });
+            }
             AddProjectTerminalTab { project_path } => {
                 self.add_project_tagged_tab(project_path.clone(), TabKind::Terminal, None, ctx);
             }
@@ -21378,6 +21520,9 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
+            AddProjectProcessTab { project_path } => {
+                self.add_project_tagged_tab(project_path.clone(), TabKind::Process, None, ctx);
+            }
             AddDefaultAgentTab { project_path } => {
                 self.add_default_agent_tab(project_path.clone(), ctx);
             }
@@ -21385,6 +21530,14 @@ impl TypedActionView for Workspace {
                 let collapsed = &mut self.vertical_tabs_panel.collapsed_projects;
                 if !collapsed.remove(project_key) {
                     collapsed.insert(project_key.clone());
+                }
+                ctx.notify();
+            }
+            ToggleSoloSubsectionCollapsed { project_key, kind } => {
+                let collapsed = &mut self.vertical_tabs_panel.collapsed_subsections;
+                let key = format!("{project_key}:{kind:?}");
+                if !collapsed.remove(&key) {
+                    collapsed.insert(key);
                 }
                 ctx.notify();
             }
@@ -23895,6 +24048,18 @@ impl View for Workspace {
                     );
                 }
             }
+        }
+
+        if let Some((_, position)) = &self.show_project_header_context_menu {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.project_header_context_menu).finish(),
+                OffsetPositioning::offset_from_parent(
+                    *position,
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopLeft,
+                    ChildAnchor::TopLeft,
+                ),
+            );
         }
 
         // Render the new session dropdown menu. This is outside the tab bar visibility

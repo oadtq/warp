@@ -168,6 +168,11 @@ pub enum WorkspaceAction {
     /// upsert into the `projects` table). Does NOT auto-open a tab — matches
     /// Solo's "add project, then add terminals/agents into it" UX.
     AddProject,
+    /// Remove a project from the sidebar. Open tabs tagged with this project
+    /// are re-bucketed into the "Ungrouped" section.
+    RemoveProject {
+        path: PathBuf,
+    },
     /// Open a new terminal tab tagged with `TabKind::Terminal`. When
     /// `project_path` is `Some`, the shell opens in that directory and the tab
     /// renders under that project's Terminals section; `None` opens an
@@ -183,6 +188,12 @@ pub enum WorkspaceAction {
         project_path: Option<PathBuf>,
         agent: CLIAgent,
     },
+    /// Open a new terminal tab tagged with `TabKind::Process`. `project_path =
+    /// Some` opens it in that project's directory and renders under that
+    /// project's Processes section; `None` opens an ungrouped process.
+    AddProjectProcessTab {
+        project_path: Option<PathBuf>,
+    },
     /// Launch the user-configured default CLI agent (settings key
     /// `agents.default_agent`) in a new tab. If `project_path` is `None`, falls
     /// back to the most-recently-opened project. Bound to Cmd+Shift+A by
@@ -195,6 +206,21 @@ pub enum WorkspaceAction {
     /// sentinel). Pure in-memory UI state — not persisted across restarts.
     ToggleSoloProjectCollapsed {
         project_key: String,
+    },
+    /// Open a context menu on a project header in the vertical-tabs sidebar.
+    /// `project_path` is the project's directory path; `position` is the
+    /// pointer location used to anchor the menu.
+    ToggleProjectHeaderContextMenu {
+        project_path: PathBuf,
+        position: Vector2F,
+    },
+    /// Collapse / expand a Solo-style subsection (Agents / Terminals /
+    /// Processes) inside a project group. `project_key` is the project path
+    /// string (or the Ungrouped sentinel) and `kind` identifies which
+    /// subsection to toggle.
+    ToggleSoloSubsectionCollapsed {
+        project_key: String,
+        kind: crate::tab::TabKind,
     },
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
@@ -229,6 +255,7 @@ pub enum WorkspaceAction {
     DecreaseZoom,
     ResetZoom,
     ActivateTabByNumber(usize),
+    ActivateProjectByNumber(usize),
     OpenPalette {
         mode: PaletteMode,
         source: PaletteSource,
@@ -782,6 +809,7 @@ impl WorkspaceAction {
             ContinueConversationLocally { .. } => true,
             ActivateTab(_)
             | ActivateTabByNumber(_)
+            | ActivateProjectByNumber(_)
             | ActivatePrevTab
             | ActivateNextTab
             | ActivateLastTab
@@ -815,8 +843,10 @@ impl WorkspaceAction {
             | AddAmbientAgentTab
             | AddDockerSandboxTab
             | AddProject
+            | RemoveProject { .. }
             | AddProjectTerminalTab { .. }
             | AddProjectAgentTab { .. }
+            | AddProjectProcessTab { .. }
             | AddDefaultAgentTab { .. }
             | AddWindow
             | AddWindowWithShell { .. }
@@ -857,6 +887,7 @@ impl WorkspaceAction {
             | OpenPalette { .. }
             | TogglePalette { mode: _, source: _ }
             | ToggleSoloProjectCollapsed { .. }
+            | ToggleSoloSubsectionCollapsed { .. }
             | ShowUpgrade
             | ShowReferralSettingsPage
             | JoinSlack
@@ -871,6 +902,7 @@ impl WorkspaceAction {
             | OpenLaunchConfigSaveModal
             | ToggleTabRightClickMenu { .. }
             | ToggleVerticalTabsPaneContextMenu { .. }
+            | ToggleProjectHeaderContextMenu { .. }
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu
             | ToggleNewSessionMenu { .. }

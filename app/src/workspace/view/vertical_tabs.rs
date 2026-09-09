@@ -123,6 +123,10 @@ const VERTICAL_TABS_ICON_SIZE: f32 = 24.;
 /// `STATUS_ELEMENT_PADDING` (2px) for an overall ~14px element next to a 12pt title.
 const VERTICAL_TABS_SUMMARY_STATUS_ICON_SIZE: f32 = 10.;
 
+/// Icon size for the standalone status indicator in Condensed mode. Kept small so the
+/// row stays a single, dense line while still conveying agent task status.
+const CONDENSED_STATUS_ICON_SIZE: f32 = 8.;
+
 fn vtab_pane_row_position_id(pane_group_id: EntityId, pane_id: PaneId) -> String {
     format!("vertical_tabs:pane_row:{pane_group_id:?}:{pane_id}")
 }
@@ -578,9 +582,14 @@ pub(super) struct VerticalTabsPanelState {
     /// Solo-style: mouse state for the "Add Project" button in the control bar.
     solo_add_project_button_state: MouseStateHandle,
     /// Solo-style: keys of project groups the user has collapsed (hiding their
-    /// Agents / Terminals sections). Keyed like `solo_project_header_key`.
+    /// Agents / Terminals / Processes sections). Keyed like `solo_project_header_key`.
     /// In-memory only — collapse state resets on restart.
     pub(super) collapsed_projects: std::collections::HashSet<String>,
+    /// Solo-style: keys of subsections the user has collapsed inside a project
+    /// group. Key is `"<project_key>:<kind>"` where `<kind>` is the `TabKind`
+    /// debug representation (e.g. `Terminal`, `Agent`, `Process`).
+    /// In-memory only — collapse state resets on restart.
+    pub(super) collapsed_subsections: std::collections::HashSet<String>,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
     panes_segment_mouse_state: MouseStateHandle,
@@ -588,6 +597,7 @@ pub(super) struct VerticalTabsPanelState {
     focused_session_option_mouse_state: MouseStateHandle,
     summary_option_mouse_state: MouseStateHandle,
     compact_segment_mouse_state: MouseStateHandle,
+    condensed_segment_mouse_state: MouseStateHandle,
     expanded_segment_mouse_state: MouseStateHandle,
     command_option_mouse_state: MouseStateHandle,
     directory_option_mouse_state: MouseStateHandle,
@@ -619,6 +629,7 @@ impl Default for VerticalTabsPanelState {
             solo_project_header_states: RefCell::default(),
             solo_add_project_button_state: Default::default(),
             collapsed_projects: std::collections::HashSet::new(),
+            collapsed_subsections: std::collections::HashSet::new(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
             panes_segment_mouse_state: Default::default(),
@@ -626,6 +637,7 @@ impl Default for VerticalTabsPanelState {
             focused_session_option_mouse_state: Default::default(),
             summary_option_mouse_state: Default::default(),
             compact_segment_mouse_state: Default::default(),
+            condensed_segment_mouse_state: Default::default(),
             expanded_segment_mouse_state: Default::default(),
             command_option_mouse_state: Default::default(),
             directory_option_mouse_state: Default::default(),
@@ -1587,12 +1599,11 @@ fn render_vertical_tabs_panel(
     let scrollable_groups = ClippedScrollable::vertical(
         state.scroll_state.clone(),
         render_groups(state, workspace, app),
-        ScrollbarWidth::Custom(4.),
+        ScrollbarWidth::None,
         theme.nonactive_ui_detail().into(),
         theme.active_ui_detail().into(),
         ElementFill::None,
     )
-    .with_overlayed_scrollbar()
     .finish();
 
     let panel_content = Flex::column()
@@ -1911,6 +1922,7 @@ const SOLO_UNGROUPED_KEY: &str = "__solo_ungrouped__";
 struct SoloProjectHeaderState {
     new_terminal_button: MouseStateHandle,
     new_agent_button: MouseStateHandle,
+    new_process_button: MouseStateHandle,
 }
 
 fn solo_project_header_key(project_path: Option<&Path>) -> String {
@@ -1988,7 +2000,7 @@ fn solo_render_project_groups(
         return;
     }
 
-    for (project_path, _) in &projects {
+    for (project_index, (project_path, _)) in projects.iter().enumerate() {
         let tabs_here = by_project
             .get(&Some(project_path.clone()))
             .cloned()
@@ -2000,6 +2012,7 @@ fn solo_render_project_groups(
         solo_render_one_project(
             groups,
             Some(project_path.as_path()),
+            Some(project_index + 1),
             &tabs_here,
             state,
             workspace,
@@ -2022,6 +2035,7 @@ fn solo_render_project_groups(
         solo_render_one_project(
             groups,
             None,
+            None,
             &ungrouped,
             state,
             workspace,
@@ -2031,59 +2045,105 @@ fn solo_render_project_groups(
     }
 }
 
-/// Renders a single project block: header + Agents section + Terminals
-/// section. `project_path = None` renders the "Ungrouped" block (no add
-/// buttons — a tab can't be tagged with a non-existent project).
+/// Renders a single project block: header + Agents section + Processes
+/// section + Terminals section. `project_path = None` renders the "Ungrouped"
+/// block (no add buttons — a tab can't be tagged with a non-existent
+/// project).
 fn solo_render_one_project(
     groups: &mut Flex,
     project_path: Option<&Path>,
+    project_number: Option<usize>,
     tabs: &[(usize, Option<Vec<PaneId>>)],
     state: &VerticalTabsPanelState,
     workspace: &Workspace,
     is_any_pane_dragging: bool,
     app: &AppContext,
 ) {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
     let key = solo_project_header_key(project_path);
     let collapsed = state.collapsed_projects.contains(&key);
-    groups.add_child(render_solo_project_header(project_path, collapsed, app));
+
+    // Build all project content in an inner column.
+    let mut project_content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+
+    project_content.add_child(render_solo_project_header(
+        project_path,
+        project_number,
+        collapsed,
+        app,
+    ));
 
     // Collapsed → render only the header, hiding all sections + tabs.
-    if collapsed {
-        return;
-    }
-
-    let tabs_of_kind = |kind: TabKind| -> Vec<(usize, Option<Vec<PaneId>>)> {
-        tabs.iter()
-            .filter(|(tab_index, _)| workspace.tabs[*tab_index].kind == kind)
-            .cloned()
-            .collect()
-    };
-    // Solo order: Agents above Terminals.
-    for kind in [TabKind::Agent, TabKind::Terminal] {
-        let kind_tabs = tabs_of_kind(kind);
-        groups.add_child(render_solo_subsection_label(
-            kind,
-            kind_tabs.len(),
-            project_path,
-            state,
-            app,
-        ));
-        for (tab_index, filtered_pane_ids) in &kind_tabs {
-            groups.add_child(render_tab_group(
+    if !collapsed {
+        let tabs_of_kind = |kind: TabKind| -> Vec<(usize, Option<Vec<PaneId>>)> {
+            tabs.iter()
+                .filter(|(tab_index, _)| workspace.tabs[*tab_index].kind == kind)
+                .cloned()
+                .collect()
+        };
+        // Solo order: Agents above Processes above Terminals.
+        for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+            let kind_tabs = tabs_of_kind(kind);
+            let subsection_key = format!("{key}:{kind:?}");
+            let subsection_collapsed = state.collapsed_subsections.contains(&subsection_key);
+            project_content.add_child(render_solo_subsection_label(
+                kind,
+                kind_tabs.len(),
+                subsection_collapsed,
+                project_path,
                 state,
-                workspace,
-                *tab_index,
-                &workspace.tabs[*tab_index],
-                filtered_pane_ids.as_deref(),
-                TabGroupDragState {
-                    is_any_pane_dragging,
-                    insert_before_index: *tab_index,
-                    insert_after_index: None,
-                },
                 app,
             ));
+            if subsection_collapsed {
+                continue;
+            }
+            for (tab_index, filtered_pane_ids) in &kind_tabs {
+                project_content.add_child(render_tab_group(
+                    state,
+                    workspace,
+                    *tab_index,
+                    &workspace.tabs[*tab_index],
+                    filtered_pane_ids.as_deref(),
+                    TabGroupDragState {
+                        is_any_pane_dragging,
+                        insert_before_index: *tab_index,
+                        insert_after_index: None,
+                    },
+                    app,
+                ));
+            }
         }
     }
+
+    // Brave-style vertical grouping: a 3px left border on the entire project
+    // block. The border naturally spans the full height of the header + all
+    // subsections + tabs, creating a continuous visual thread without needing
+    // a separate stretching element or heavy horizontal hairlines.
+    // Bottom hairline separates this project from the next one.
+    // with_sides(top, left, bottom, right) — left + bottom borders.
+    let project_group = Container::new(project_content.finish())
+        .with_border(
+            Border::new(3.)
+                .with_sides(false, true, false, false)
+                .with_border_fill(internal_colors::fg_overlay_6(theme)),
+        )
+        .with_border(
+            Border::new(1.)
+                .with_sides(false, false, true, false)
+                .with_border_fill(internal_colors::fg_overlay_2(theme)),
+        )
+        .with_padding(
+            Padding::uniform(0.)
+                .with_left(4.)
+                .with_right(GROUP_HORIZONTAL_PADDING)
+                .with_bottom(6.),
+        )
+        .finish();
+
+    groups.add_child(project_group);
 }
 
 /// Renders a project header row: a full-bleed band (Solo-style) — a filled
@@ -2093,6 +2153,7 @@ fn solo_render_one_project(
 /// row collapses / expands the project. `project_path = None` → "Ungrouped".
 fn render_solo_project_header(
     project_path: Option<&Path>,
+    project_number: Option<usize>,
     collapsed: bool,
     app: &AppContext,
 ) -> Box<dyn Element> {
@@ -2109,50 +2170,45 @@ fn render_solo_project_header(
     };
     let key = solo_project_header_key(project_path);
 
-    // Collapse / expand chevron.
-    let chevron = ConstrainedBox::new(
-        if collapsed {
-            WarpIcon::ChevronRight
-        } else {
-            WarpIcon::ChevronDown
-        }
-        .to_warpui_icon(icon_color)
-        .finish(),
-    )
-    .with_width(12.)
-    .with_height(12.)
-    .finish();
-
-    let folder = ConstrainedBox::new(WarpIcon::Folder.to_warpui_icon(icon_color).finish())
-        .with_width(13.)
-        .with_height(13.)
+    // Single folder icon that changes to indicate open/closed state.
+    let folder_icon = if collapsed {
+        WarpIcon::FolderClosed
+    } else {
+        WarpIcon::Folder
+    };
+    let folder = ConstrainedBox::new(folder_icon.to_warpui_icon(icon_color).finish())
+        .with_width(14.)
+        .with_height(14.)
         .finish();
 
-    // `MainAxisSize::Max` so the row — and the band that wraps it — spans the
-    // full sidebar width.
     let mut content = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.);
-    content.add_child(chevron);
+        .with_spacing(8.);
     content.add_child(folder);
     content.add_child(
-        Text::new_inline(label, appearance.ui_font_family(), 12.)
-            .with_color(main_text.into())
-            .with_style(Properties::default().weight(Weight::Semibold))
-            .finish(),
-    );
-
-    // Full-bleed band: faint filled background + soft top/bottom hairlines only
-    // (no side borders, no corner radius) — the Solo-style section-divider look,
-    // kept deliberately low-prominence so it reads as a container, not a button.
-    let band = Container::new(content.finish())
-        .with_background(internal_colors::fg_overlay_1(theme))
-        .with_border(
-            Border::new(1.)
-                .with_sides(true, false, true, false)
-                .with_border_fill(internal_colors::fg_overlay_2(theme)),
+        Shrinkable::new(
+            1.,
+            Text::new_inline(label, appearance.ui_font_family(), 12.)
+                .with_color(main_text.into())
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .finish(),
         )
+        .finish(),
+    );
+    if let Some(project_number) = project_number {
+        content.add_child(
+            Text::new_inline(project_number.to_string(), appearance.ui_font_family(), 11.)
+                .with_color(icon_color.into())
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .finish(),
+        );
+    }
+
+    // Clean header with no background band or hairlines. The group identity
+    // is conveyed by the 2px vertical bar rendered alongside the entire project
+    // block in `solo_render_one_project`.
+    let header = Container::new(content.finish())
         .with_padding(
             Padding::uniform(7.)
                 .with_left(GROUP_HORIZONTAL_PADDING)
@@ -2160,19 +2216,31 @@ fn render_solo_project_header(
         )
         .finish();
 
-    let spaced = Container::new(band)
+    let spaced = Container::new(header)
         .with_padding(Padding::uniform(0.).with_top(10.).with_bottom(2.))
         .finish();
 
     // Clicking the header row toggles collapse / expand for this project.
-    EventHandler::new(spaced)
-        .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
-                project_key: key.clone(),
+    let mut handler = EventHandler::new(spaced).on_left_mouse_down(move |ctx, _, _| {
+        ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
+            project_key: key.clone(),
+        });
+        DispatchEventResult::StopPropagation
+    });
+
+    // Right-click on a real project header opens a context menu.
+    if let Some(path) = project_path {
+        let path = path.to_path_buf();
+        handler = handler.on_right_mouse_down(move |ctx, _, position| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleProjectHeaderContextMenu {
+                project_path: path.clone(),
+                position,
             });
             DispatchEventResult::StopPropagation
-        })
-        .finish()
+        });
+    }
+
+    handler.finish()
 }
 
 /// Resolves the user's default CLI agent from the `agents.default_cli_agent`
@@ -2187,13 +2255,15 @@ fn solo_default_agent(app: &AppContext) -> CLIAgent {
     }
 }
 
-/// Renders an "AGENTS" / "TERMINALS" sub-section header row: label + count on
-/// the left, a `+` add button on the right. The `+` button is rendered for
-/// every section — including "Ungrouped" — so a terminal / agent can be
-/// created from anywhere (`project_path = None` → an ungrouped tab).
+/// Renders an "AGENTS" / "PROCESSES" / "TERMINALS" sub-section header row:
+/// chevron + label + count on the left, a `+` add button on the right.
+/// The `+` button is rendered for every section — including "Ungrouped" — so
+/// a terminal / agent / process can be created from anywhere (`project_path =
+/// None` → an ungrouped tab). Clicking the label row toggles collapse.
 fn render_solo_subsection_label(
     kind: TabKind,
     count: usize,
+    collapsed: bool,
     project_path: Option<&Path>,
     state: &VerticalTabsPanelState,
     app: &AppContext,
@@ -2205,6 +2275,7 @@ fn render_solo_subsection_label(
     let label = match kind {
         TabKind::Terminal => "TERMINALS",
         TabKind::Agent => "AGENTS",
+        TabKind::Process => "PROCESSES",
     };
     let label_text = if count > 0 {
         format!("{label}  {count}")
@@ -2212,15 +2283,36 @@ fn render_solo_subsection_label(
         label.to_string()
     };
 
-    let mut row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center);
-    row.add_child(
+    // Collapse / expand chevron.
+    let chevron = ConstrainedBox::new(
+        if collapsed {
+            WarpIcon::ChevronRight
+        } else {
+            WarpIcon::ChevronDown
+        }
+        .to_warpui_icon(sub_text)
+        .finish(),
+    )
+    .with_width(10.)
+    .with_height(10.)
+    .finish();
+
+    let mut label_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.);
+    label_row.add_child(chevron);
+    label_row.add_child(
         Text::new_inline(label_text, appearance.ui_font_family(), 10.)
             .with_color(sub_text.into())
             .finish(),
     );
+
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    row.add_child(label_row.finish());
 
     // `+` add button — present for every section, including Ungrouped.
     let key = solo_project_header_key(project_path);
@@ -2238,6 +2330,12 @@ fn render_solo_subsection_label(
             WorkspaceAction::AddProjectAgentTab {
                 project_path: owned_path,
                 agent: solo_default_agent(app),
+            },
+        ),
+        TabKind::Process => (
+            header_state.new_process_button.clone(),
+            WorkspaceAction::AddProjectProcessTab {
+                project_path: owned_path,
             },
         ),
     };
@@ -2262,12 +2360,24 @@ fn render_solo_subsection_label(
         .finish();
     row.add_child(add_button);
 
-    Container::new(row.finish())
+    let container = Container::new(row.finish())
         .with_padding(
             Padding::uniform(2.)
                 .with_horizontal(GROUP_HORIZONTAL_PADDING + 4.)
                 .with_top(4.),
         )
+        .finish();
+
+    // Clicking the label row toggles collapse / expand for this subsection.
+    let toggle_key = key.clone();
+    EventHandler::new(container)
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloSubsectionCollapsed {
+                project_key: toggle_key.clone(),
+                kind,
+            });
+            DispatchEventResult::StopPropagation
+        })
         .finish()
 }
 
@@ -2472,6 +2582,7 @@ fn render_tab_group_internal(
                 let view_mode = *TabSettings::as_ref(app).vertical_tabs_view_mode.value();
                 let row = match view_mode {
                     VerticalTabsViewMode::Compact => render_compact_pane_row(pane_props, app),
+                    VerticalTabsViewMode::Condensed => render_condensed_pane_row(pane_props, app),
                     VerticalTabsViewMode::Expanded => render_pane_row(pane_props, app),
                 };
                 rows.add_child(row);
@@ -5234,8 +5345,7 @@ pub(super) fn render_settings_popup(
     .with_margin_bottom(4.)
     .finish();
 
-    // Segmented control row (compact/expanded toggle)
-    // Segmented control row (compact/expanded toggle) — always at the top
+    // Segmented control row (compact/condensed/expanded toggle)
     let segmented_control = Container::new(
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
@@ -5248,6 +5358,20 @@ pub(super) fn render_settings_popup(
                         matches!(current_mode, VerticalTabsViewMode::Compact),
                         state.compact_segment_mouse_state.clone(),
                         VerticalTabsViewMode::Compact,
+                        theme,
+                        sub_text,
+                    ),
+                )
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    render_popup_segment(
+                        WarpIcon::DistributeSpacingVertical,
+                        matches!(current_mode, VerticalTabsViewMode::Condensed),
+                        state.condensed_segment_mouse_state.clone(),
+                        VerticalTabsViewMode::Condensed,
                         theme,
                         sub_text,
                     ),
@@ -6558,6 +6682,92 @@ pub(super) fn render_detail_sidecar(
         child_anchor,
         sidecar: ConstrainedBox::new(sidecar).with_width(width).finish(),
     })
+}
+
+/// Renders the densest vertical-tabs row: a single line containing an optional
+/// agent status indicator and the pane title. No icon, no subtitle, minimal padding.
+fn render_condensed_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let main_text_color = theme.main_text_color(theme.background());
+    let has_indicator = props.typed.badge(app).is_some() || has_unread_activity(&props.typed, app);
+
+    let (status, title_element) = if let TypedPane::Terminal(terminal_pane) = &props.typed {
+        let terminal_view = terminal_pane.terminal_view(app).as_ref(app);
+        let status = summary_conversation_status_for_terminal(terminal_view, app);
+        let title = render_pane_title_slot(
+            &props,
+            || {
+                render_terminal_primary_line_for_view(
+                    terminal_view,
+                    appearance,
+                    main_text_color,
+                    app,
+                )
+            },
+            12.,
+            main_text_color,
+            ClipConfig::ellipsis(),
+            appearance,
+            app,
+        );
+        (status, title)
+    } else {
+        let title = render_pane_title_slot(
+            &props,
+            || render_compact_non_terminal_title(props.displayed_title(), &props.typed, appearance),
+            12.,
+            main_text_color,
+            if matches!(props.typed, TypedPane::Code(_)) {
+                ClipConfig::start()
+            } else {
+                ClipConfig::ellipsis()
+            },
+            appearance,
+            app,
+        );
+        (None, title)
+    };
+
+    // Title row with optional notification indicator pushed to the far right.
+    let title_row = if has_indicator {
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., title_element).finish())
+            .with_child(
+                Container::new(render_title_indicator(theme))
+                    .with_margin_left(4.)
+                    .finish(),
+            )
+            .finish()
+    } else {
+        title_element
+    };
+
+    let mut content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.);
+
+    if let Some(status) = status {
+        content.add_child(render_status_element(
+            &status,
+            CONDENSED_STATUS_ICON_SIZE,
+            appearance,
+        ));
+    }
+
+    content.add_child(Shrinkable::new(1., title_row).finish());
+
+    render_pane_row_element(
+        props,
+        Padding::uniform(4.).with_left(8.).with_right(8.),
+        true,
+        content.finish(),
+        theme,
+    )
 }
 
 fn render_compact_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {

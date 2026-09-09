@@ -43,6 +43,7 @@ impl VerticalTabsDisplayOption {
             Self::TabItemMode(VerticalTabsTabItemMode::FocusedSession) => json!("focused_session"),
             Self::TabItemMode(VerticalTabsTabItemMode::Summary) => json!("summary"),
             Self::ViewMode(VerticalTabsViewMode::Compact) => json!("compact"),
+            Self::ViewMode(VerticalTabsViewMode::Condensed) => json!("condensed"),
             Self::ViewMode(VerticalTabsViewMode::Expanded) => json!("expanded"),
             Self::PrimaryInfo(VerticalTabsPrimaryInfo::Command) => json!("command"),
             Self::PrimaryInfo(VerticalTabsPrimaryInfo::WorkingDirectory) => {
