@@ -6782,9 +6782,12 @@ impl Workspace {
             })
             .into_item()];
 
-        ctx.update_view(&self.project_header_context_menu, |context_menu, view_ctx| {
-            context_menu.set_items(menu_items, view_ctx);
-        });
+        ctx.update_view(
+            &self.project_header_context_menu,
+            |context_menu, view_ctx| {
+                context_menu.set_items(menu_items, view_ctx);
+            },
+        );
         self.show_project_header_context_menu = Some((project_path, position));
         ctx.focus(&self.project_header_context_menu);
         ctx.notify();
@@ -10382,50 +10385,101 @@ impl Workspace {
     }
 
     pub fn activate_prev_tab(&mut self, ctx: &mut ViewContext<Self>) {
-        let index = if self.vertical_tabs_panel.search_query.is_empty() {
-            if self.active_tab_index > 0 {
-                self.active_tab_index - 1
-            } else {
-                self.tabs.len() - 1
-            }
-        } else {
-            let matching = self.vertical_tabs_panel.matching_tab_indices(
-                &self.tabs,
-                self.active_tab_index,
-                ctx,
-            );
-            matching
-                .iter()
-                .rev()
-                .find(|&&i| i < self.active_tab_index)
-                .or_else(|| matching.last())
-                .copied()
-                .unwrap_or(self.active_tab_index)
-        };
+        let order = self.visual_tab_order(ctx);
+        let index = order
+            .iter()
+            .position(|&i| i == self.active_tab_index)
+            .and_then(|position| {
+                if order.is_empty() {
+                    None
+                } else if position > 0 {
+                    order.get(position - 1).copied()
+                } else {
+                    order.last().copied()
+                }
+            })
+            .unwrap_or(self.active_tab_index);
         self.activate_tab(index, ctx);
     }
 
     pub fn activate_next_tab(&mut self, ctx: &mut ViewContext<Self>) {
-        let index = if self.vertical_tabs_panel.search_query.is_empty() {
-            if self.active_tab_index + 1 < self.tabs.len() {
-                self.active_tab_index + 1
-            } else {
-                0
-            }
-        } else {
-            let matching = self.vertical_tabs_panel.matching_tab_indices(
-                &self.tabs,
-                self.active_tab_index,
-                ctx,
-            );
-            matching
-                .iter()
-                .find(|&&i| i > self.active_tab_index)
-                .or_else(|| matching.first())
-                .copied()
-                .unwrap_or(self.active_tab_index)
-        };
+        let order = self.visual_tab_order(ctx);
+        let index = order
+            .iter()
+            .position(|&i| i == self.active_tab_index)
+            .and_then(|position| order.get((position + 1) % order.len()).copied())
+            .unwrap_or(self.active_tab_index);
         self.activate_tab(index, ctx);
+    }
+
+    fn visual_tab_order(&self, ctx: &AppContext) -> Vec<usize> {
+        let mut indices = if self.vertical_tabs_panel.search_query.is_empty() {
+            (0..self.tabs.len()).collect()
+        } else {
+            self.vertical_tabs_panel
+                .matching_tab_indices(&self.tabs, self.active_tab_index, ctx)
+        };
+
+        if !(FeatureFlag::ProjectGroupedTabs.is_enabled()
+            && *TabSettings::as_ref(ctx).use_project_grouping)
+        {
+            return indices;
+        }
+
+        let index_set: std::collections::HashSet<usize> = indices.drain(..).collect();
+        let mut ordered = Vec::new();
+        let project_order = self.project_group_order(ctx);
+        for project_path in &project_order {
+            for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+                ordered.extend(self.tabs.iter().enumerate().filter_map(|(index, tab)| {
+                    (index_set.contains(&index)
+                        && tab.project_path.as_ref() == Some(project_path)
+                        && tab.kind == kind)
+                        .then_some(index)
+                }));
+            }
+        }
+        for kind in [TabKind::Agent, TabKind::Process, TabKind::Terminal] {
+            ordered.extend(self.tabs.iter().enumerate().filter_map(|(index, tab)| {
+                (index_set.contains(&index)
+                    && (tab.project_path.is_none()
+                        || tab
+                            .project_path
+                            .as_ref()
+                            .is_some_and(|path| !project_order.contains(path)))
+                    && tab.kind == kind)
+                    .then_some(index)
+            }));
+        }
+        ordered
+    }
+
+    fn project_group_order(&self, ctx: &AppContext) -> Vec<PathBuf> {
+        let mut projects: Vec<(PathBuf, chrono::NaiveDateTime)> =
+            ProjectManagementModel::handle(ctx)
+                .as_ref(ctx)
+                .all_projects()
+                .map(|p| (PathBuf::from(&p.path), p.added_ts))
+                .collect();
+        projects.sort_by(|a, b| a.1.cmp(&b.1));
+        projects.into_iter().map(|(path, _)| path).collect()
+    }
+
+    pub fn activate_project_by_number(&mut self, number: usize, ctx: &mut ViewContext<Self>) {
+        let Some(project_path) = self
+            .project_group_order(ctx)
+            .get(number.saturating_sub(1))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(index) = self.visual_tab_order(ctx).into_iter().find(|&index| {
+            self.tabs
+                .get(index)
+                .is_some_and(|tab| tab.project_path.as_ref() == Some(&project_path))
+        }) {
+            self.activate_tab(index, ctx);
+        }
     }
 
     pub fn activate_last_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -21317,6 +21371,7 @@ impl TypedActionView for Workspace {
         match action {
             ActivateTab(index) => self.activate_tab(*index, ctx),
             ActivateTabByNumber(num) => self.activate_tab(num.saturating_sub(1), ctx),
+            ActivateProjectByNumber(num) => self.activate_project_by_number(*num, ctx),
             ActivatePrevTab => self.activate_prev_tab(ctx),
             OpenLaunchConfigSaveModal => self.open_launch_config_save_modal(ctx),
             ActivateNextTab => self.activate_next_tab(ctx),
@@ -21400,7 +21455,19 @@ impl TypedActionView for Workspace {
                     // Terminal and Agent are handled by the existing path
                     // (add_terminal_tab applies DefaultSessionMode::Agent internally).
                     DefaultSessionMode::Terminal | DefaultSessionMode::Agent => {
-                        if FeatureFlag::WelcomeTab.is_enabled() {
+                        if FeatureFlag::ProjectGroupedTabs.is_enabled()
+                            && *TabSettings::as_ref(ctx).use_project_grouping
+                            && matches!(effective_mode, DefaultSessionMode::Terminal)
+                            && self
+                                .tabs
+                                .get(self.active_tab_index)
+                                .and_then(|tab| tab.project_path.clone())
+                                .is_some()
+                        {
+                            let project_path =
+                                self.tabs[self.active_tab_index].project_path.clone();
+                            self.add_project_tagged_tab(project_path, TabKind::Terminal, None, ctx);
+                        } else if FeatureFlag::WelcomeTab.is_enabled() {
                             self.add_welcome_tab(ctx);
                         } else {
                             self.add_terminal_tab(false, ctx);
@@ -21454,12 +21521,7 @@ impl TypedActionView for Workspace {
                 }
             }
             AddProjectProcessTab { project_path } => {
-                self.add_project_tagged_tab(
-                    project_path.clone(),
-                    TabKind::Process,
-                    None,
-                    ctx,
-                );
+                self.add_project_tagged_tab(project_path.clone(), TabKind::Process, None, ctx);
             }
             AddDefaultAgentTab { project_path } => {
                 self.add_default_agent_tab(project_path.clone(), ctx);

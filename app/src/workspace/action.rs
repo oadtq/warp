@@ -255,6 +255,7 @@ pub enum WorkspaceAction {
     DecreaseZoom,
     ResetZoom,
     ActivateTabByNumber(usize),
+    ActivateProjectByNumber(usize),
     OpenPalette {
         mode: PaletteMode,
         source: PaletteSource,
@@ -808,6 +809,7 @@ impl WorkspaceAction {
             ContinueConversationLocally { .. } => true,
             ActivateTab(_)
             | ActivateTabByNumber(_)
+            | ActivateProjectByNumber(_)
             | ActivatePrevTab
             | ActivateNextTab
             | ActivateLastTab

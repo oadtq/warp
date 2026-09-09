@@ -574,6 +574,78 @@ pub fn init(app: &mut AppContext) {
         .with_group(bindings::BindingGroup::Navigation.as_str())
         .with_key_binding("cmdorctrl-9"),
         EditableBinding::new(
+            "workspace:activate_first_project",
+            "Switch to 1st project",
+            WorkspaceAction::ActivateProjectByNumber(1),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-1"),
+        EditableBinding::new(
+            "workspace:activate_second_project",
+            "Switch to 2nd project",
+            WorkspaceAction::ActivateProjectByNumber(2),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-2"),
+        EditableBinding::new(
+            "workspace:activate_third_project",
+            "Switch to 3rd project",
+            WorkspaceAction::ActivateProjectByNumber(3),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-3"),
+        EditableBinding::new(
+            "workspace:activate_fourth_project",
+            "Switch to 4th project",
+            WorkspaceAction::ActivateProjectByNumber(4),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-4"),
+        EditableBinding::new(
+            "workspace:activate_fifth_project",
+            "Switch to 5th project",
+            WorkspaceAction::ActivateProjectByNumber(5),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-5"),
+        EditableBinding::new(
+            "workspace:activate_sixth_project",
+            "Switch to 6th project",
+            WorkspaceAction::ActivateProjectByNumber(6),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-6"),
+        EditableBinding::new(
+            "workspace:activate_seventh_project",
+            "Switch to 7th project",
+            WorkspaceAction::ActivateProjectByNumber(7),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-7"),
+        EditableBinding::new(
+            "workspace:activate_eighth_project",
+            "Switch to 8th project",
+            WorkspaceAction::ActivateProjectByNumber(8),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-8"),
+        EditableBinding::new(
+            "workspace:activate_ninth_project",
+            "Switch to 9th project",
+            WorkspaceAction::ActivateProjectByNumber(9),
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-alt-9"),
+        EditableBinding::new(
             "workspace:activate_prev_tab",
             "Activate previous tab",
             WorkspaceAction::ActivatePrevTab,
@@ -583,6 +655,16 @@ pub fn init(app: &mut AppContext) {
         )
         .with_mac_key_binding("shift-cmd-{")
         .with_linux_or_windows_key_binding("ctrl-pageup"),
+        EditableBinding::new(
+            "workspace:activate_prev_visual_tab",
+            "Activate previous visual tab",
+            WorkspaceAction::ActivatePrevTab,
+        )
+        .with_context_predicate(
+            id!("Workspace") & id!("Workspace_MultipleTabs") & !id!("Workspace_PaneDragging"),
+        )
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-shift-K"),
         EditableBinding::new(
             "workspace:activate_next_tab",
             "Activate next tab",
@@ -594,6 +676,16 @@ pub fn init(app: &mut AppContext) {
         .with_group(bindings::BindingGroup::Navigation.as_str())
         .with_mac_key_binding("shift-cmd-}")
         .with_linux_or_windows_key_binding("ctrl-pagedown"),
+        EditableBinding::new(
+            "workspace:activate_next_visual_tab",
+            "Activate next visual tab",
+            WorkspaceAction::ActivateNextTab,
+        )
+        .with_context_predicate(
+            id!("Workspace") & id!("Workspace_MultipleTabs") & !id!("Workspace_PaneDragging"),
+        )
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_mac_key_binding("cmd-shift-J"),
         EditableBinding::new(
             "pane_group:navigate_prev",
             "Activate previous pane",
@@ -735,6 +827,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_mac_key_binding("cmd-shift-A")
         .with_linux_or_windows_key_binding("ctrl-shift-A")
+        .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(id!("Workspace") & !id!("Workspace_PaneDragging"))
         .with_enabled(|| FeatureFlag::ProjectGroupedTabs.is_enabled()),
         EditableBinding::new(

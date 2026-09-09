@@ -2000,7 +2000,7 @@ fn solo_render_project_groups(
         return;
     }
 
-    for (project_path, _) in &projects {
+    for (project_index, (project_path, _)) in projects.iter().enumerate() {
         let tabs_here = by_project
             .get(&Some(project_path.clone()))
             .cloned()
@@ -2012,6 +2012,7 @@ fn solo_render_project_groups(
         solo_render_one_project(
             groups,
             Some(project_path.as_path()),
+            Some(project_index + 1),
             &tabs_here,
             state,
             workspace,
@@ -2034,6 +2035,7 @@ fn solo_render_project_groups(
         solo_render_one_project(
             groups,
             None,
+            None,
             &ungrouped,
             state,
             workspace,
@@ -2050,6 +2052,7 @@ fn solo_render_project_groups(
 fn solo_render_one_project(
     groups: &mut Flex,
     project_path: Option<&Path>,
+    project_number: Option<usize>,
     tabs: &[(usize, Option<Vec<PaneId>>)],
     state: &VerticalTabsPanelState,
     workspace: &Workspace,
@@ -2066,7 +2069,12 @@ fn solo_render_one_project(
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-    project_content.add_child(render_solo_project_header(project_path, collapsed, app));
+    project_content.add_child(render_solo_project_header(
+        project_path,
+        project_number,
+        collapsed,
+        app,
+    ));
 
     // Collapsed → render only the header, hiding all sections + tabs.
     if !collapsed {
@@ -2145,6 +2153,7 @@ fn solo_render_one_project(
 /// row collapses / expands the project. `project_path = None` → "Ungrouped".
 fn render_solo_project_header(
     project_path: Option<&Path>,
+    project_number: Option<usize>,
     collapsed: bool,
     app: &AppContext,
 ) -> Box<dyn Element> {
@@ -2178,11 +2187,23 @@ fn render_solo_project_header(
         .with_spacing(8.);
     content.add_child(folder);
     content.add_child(
-        Text::new_inline(label, appearance.ui_font_family(), 12.)
-            .with_color(main_text.into())
-            .with_style(Properties::default().weight(Weight::Semibold))
-            .finish(),
+        Shrinkable::new(
+            1.,
+            Text::new_inline(label, appearance.ui_font_family(), 12.)
+                .with_color(main_text.into())
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .finish(),
+        )
+        .finish(),
     );
+    if let Some(project_number) = project_number {
+        content.add_child(
+            Text::new_inline(project_number.to_string(), appearance.ui_font_family(), 11.)
+                .with_color(icon_color.into())
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .finish(),
+        );
+    }
 
     // Clean header with no background band or hairlines. The group identity
     // is conveyed by the 2px vertical bar rendered alongside the entire project
@@ -2200,13 +2221,12 @@ fn render_solo_project_header(
         .finish();
 
     // Clicking the header row toggles collapse / expand for this project.
-    let mut handler = EventHandler::new(spaced)
-        .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
-                project_key: key.clone(),
-            });
-            DispatchEventResult::StopPropagation
+    let mut handler = EventHandler::new(spaced).on_left_mouse_down(move |ctx, _, _| {
+        ctx.dispatch_typed_action(WorkspaceAction::ToggleSoloProjectCollapsed {
+            project_key: key.clone(),
         });
+        DispatchEventResult::StopPropagation
+    });
 
     // Right-click on a real project header opens a context menu.
     if let Some(path) = project_path {

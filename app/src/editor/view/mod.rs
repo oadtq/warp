@@ -790,10 +790,8 @@ pub fn init(ctx: &mut AppContext) {
             "Clear selected lines",
             EditorAction::ClearAndCopyLines,
         )
-        .with_context_predicate(id!("EditorView") & !id!("IMEOpen") & !id!("Vim"))
-        // Mac only because otherwise this would conflict with the keybinding to clear all blocks.
-        // NOTE ctrl-u exists as a default binding for this action that works across all platforms.
-        .with_mac_key_binding("cmd-shift-K"),
+        .with_context_predicate(id!("EditorView") & !id!("IMEOpen") & !id!("Vim")), // Ctrl-u is the default binding for this action. Cmd+Shift+K is reserved
+                                                                                    // for workspace-level visual tab navigation.
         EditableBinding::new(
             "editor_view:cut_all_right",
             "Cut all right",
